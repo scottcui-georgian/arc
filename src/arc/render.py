@@ -7,9 +7,9 @@ from arc.text import format_float, format_signed_delta, indent_block
 from arc.timeutil import format_elapsed
 
 STATUS_MARKERS = {
-    "committed": "●",
+    "committed": "•",
     "running": "◌",
-    "completed": "✓",
+    "completed": "◆",
     "failed": "✗",
 }
 

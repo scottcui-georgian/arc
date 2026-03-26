@@ -12,9 +12,9 @@ def register(parser: argparse.ArgumentParser) -> None:
     parser.formatter_class = argparse.RawDescriptionHelpFormatter
     parser.epilog = (
         "Tree markers:\n"
-        "  ● committed\n"
+        "  • committed\n"
         "  ◌ running\n"
-        "  ✓ completed + promising\n"
+        "  ◆ completed + promising\n"
         "  ○ completed + unsupported\n"
         "  ✗ hard failure\n"
         "  ◦ archived prefix\n"
