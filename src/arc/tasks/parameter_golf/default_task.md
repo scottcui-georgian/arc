@@ -66,38 +66,37 @@ Do not tune runs through environment variables. Make reproducible changes in the
 ### 4. Run
 
 ```bash
-arc commit <n>
-arc submit <commit>
+arc submit <n>
 ```
 
-`arc submit` is the tracked execution command. It launches the Modal-backed train job for that worktree and appends output to `<worktree>/run.log`.
+`arc submit <n>` is the tracked execution command. It auto-commits that worktree, creates the node, launches the Modal-backed train job, and appends output to `<worktree>/run.log`. `arc submit <commit>` still works for resubmitting an existing tracked node.
 
 If data preparation is needed, stop and seek for help.
 
 Treat the single-A10 run as a proxy for the real 8xH100 target. Prefer changes that are likely to transfer to the final submission setting, and avoid tuning specifically for quirks of this proxy.
 Do not treat A10 training or evaluation wallclock as hard local pass/fail gates. They are directional signals for the final 8xH100 run. Artifact bytes still matter directly.
 
-While a run is in progress, you can prepare and launch the next experiment from another worktree. Use `arc status` to see which nodes arc still considers `running`, but do not assume that means arc auto-detected remote completion. To learn whether a run actually finished, inspect its `run.log`.
+While a run is in progress, you can prepare and launch the next experiment from another worktree. Use `arc status` to see which nodes are still active and which finished remotely and now need `arc result` or `arc fail`.
 
 ### 5. Analyze
 
 When a run finishes:
 
 ```bash
-cat .arc/worktrees/<date>-<n>/run.log
+arc tail <commit> --no-follow
 ```
 
 Record with thorough analysis — what happened, why, and what it means for next steps:
 
 ```bash
-arc result <commit> - --val_bpb=<value> --peak_vram_mb=<value> <<'EOF'
+arc result <commit> - --verdict=promising --val_bpb=<value> --peak_vram_mb=<value> <<'EOF'
 ...few paragraphs of analysis...
 EOF
 ```
 
 In that analysis, reason about the real submission objective, not just the proxy score. At minimum, keep track of final roundtrip `val_bpb`, likely 8xH100 training behavior, likely 8xH100 evaluation behavior, and artifact bytes.
 
-For crashes or timeouts:
+For hard failures such as crashes, OOMs, timeouts, infra problems, or other invalid runs:
 
 ```bash
 arc fail <commit> - --peak_vram_mb=<value> <<'EOF'
@@ -113,7 +112,7 @@ After recording results:
 
 - **Promote** if a node is the new best and the improvement is clear: `arc promote <commit>`
 - **Deepen** if the direction is trending well — go brainstorm the next step.
-- **Abandon** if 3+ experiments on a path haven't improved. The nodes stay in the tree for reference.
+- **Abandon** if 3+ experiments on a path haven't improved. Archive stale leaf nodes with `arc archive <commit>`.
 - **Combine** if two directions both show independent gains.
 
 Then go back to step 1.

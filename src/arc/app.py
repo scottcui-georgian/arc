@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from arc.errors import ArcError
-from arc.models import Direction
+from arc.models import Direction, Node
 from arc.paths import ArcPaths, build_paths, relative_to_repo, validate_name
 from arc.store import ArcStore
 from arc.tasks.registry import infer_task_module_name, load_task_module
@@ -21,6 +21,8 @@ class ArcApp:
     def discover(cls, start: Path | None = None) -> ArcApp:
         paths = build_paths(start)
         store = ArcStore(paths.db_path)
+        if store.exists():
+            store.initialize()
         task_name = os.environ.get("ARC_TASK")
         if task_name is None and store.exists():
             task_name = store.get_meta("task")
@@ -96,3 +98,9 @@ class ArcApp:
         if len(matches) > 1:
             raise ArcError(f"Multiple worktrees match `{name}`; clean up older copies first.")
         return matches[0]
+
+    def node_worktree_path(self, node: Node) -> Path:
+        return (self.paths.repo_root / node.worktree).resolve()
+
+    def node_log_path(self, node: Node) -> Path:
+        return self.node_worktree_path(node) / "run.log"

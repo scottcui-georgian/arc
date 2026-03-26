@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,10 +22,26 @@ class ArcPaths:
 
 def discover_repo_root(start: Path | None = None) -> Path:
     current = (start or Path.cwd()).resolve()
-    for candidate in (current, *current.parents):
-        if (candidate / ".git").exists():
-            return candidate
-    raise ArcError("Not inside a git repository.")
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(current),
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ArcError("Not inside a git repository.")
+
+    common_dir = Path(result.stdout.strip())
+    if common_dir.name != ".git":
+        raise ArcError("Could not resolve the repository root.")
+    return common_dir.parent
 
 
 def build_paths(start: Path | None = None) -> ArcPaths:

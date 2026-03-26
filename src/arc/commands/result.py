@@ -12,6 +12,12 @@ from arc.timeutil import utc_now_iso
 def register(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("commit", help="Experiment commit hash or prefix.")
     parser.add_argument("analysis", help="Analysis text or `-` for stdin.")
+    parser.add_argument(
+        "--verdict",
+        required=True,
+        choices=("promising", "unsupported"),
+        help="Research verdict for a valid completed run.",
+    )
 
 
 def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
@@ -19,6 +25,8 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
     record = app.store.get_node_record(args.commit)
     if record is None:
         raise ArcError(f"Unknown commit: {args.commit}")
+    if record.node.archived_at is not None:
+        raise ArcError(f"Cannot record result for archived node `{record.node.commit}`.")
     if record.node.status not in {"committed", "running"}:
         raise ArcError(f"Cannot record result from status `{record.node.status}`.")
 
@@ -34,10 +42,12 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
         status="completed",
         analysis=analysis,
         completed_at=completed_at,
+        verdict=args.verdict,
     )
 
     print(f"Recorded result for {record.node.commit} ({record.node.name})")
     print(f"Status: {record.node.status} → completed")
+    print(f"Verdict: {args.verdict}")
     for name, value in sorted(metrics.items()):
         print(f"{name}: {value:g}")
     return 0

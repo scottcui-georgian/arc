@@ -32,18 +32,18 @@ arc tree
 arc report <commit>
 arc show <commit>
 arc status
+arc tail <commit>
 arc hyp
 ```
 
-`arc status` reflects arc's recorded state. It shows submitted nodes that are still marked `running`, plus nodes that you have already recorded as completed or failed. It does not independently detect that a remote Modal job has finished; you must inspect `run.log` and then call `arc result` or `arc fail`.
+`arc status` inspects each running node's `run.log`. It distinguishes runs that are still active from runs whose remote Modal job already finished and now need `arc result` or `arc fail`.
 
 ### Creating experiments
 
 ```bash
 arc hyp <name> <text | ->
 arc new <parent> <name>
-arc commit <name>
-arc submit <commit>
+arc submit <name>
 ```
 
 `arc new` accepts a commit hash or `main` as the parent. Worktrees are created at `.arc/worktrees/<date>-<name>`.
@@ -51,12 +51,12 @@ arc submit <commit>
 ### Recording results
 
 ```bash
-arc result <commit> <analysis | -> [--<metric>=<value> ...]
+arc result <commit> <analysis | -> --verdict=promising|unsupported [--<metric>=<value> ...]
 arc fail <commit> <analysis | -> [--<metric>=<value> ...]
 arc promote <commit>
 ```
 
-`arc result` and `arc fail` write analysis and metrics into arc's database. No extra git commit is required just to record results.
+`arc result` records a valid finished run plus a research verdict: `promising` or `unsupported`. `arc fail` is only for hard execution failures such as crashes, OOMs, timeouts, infra failures, or otherwise invalid runs. No extra git commit is required just to record results.
 
 ## Execution
 
@@ -69,10 +69,10 @@ Data preparation is human-facing. You may inspect `data/` and `data/README.md` t
 For tracked experiments, the normal execution path is:
 
 ```bash
-arc submit <commit>
+arc submit <name>
 ```
 
-This launches the task's Modal-backed training job for that committed worktree and writes output to `<worktree>/run.log`.
+`arc submit <name>` auto-commits that worktree, creates the node, launches the task's Modal-backed training job, and writes output to `<worktree>/run.log`. `arc submit <commit>` still works for resubmitting an existing tracked node.
 
 Current runs use a single-A10 proxy setup. Treat proxy results as directional; hyperparameters that win here may need retuning on the final 8xH100 budget.
 Optimize for the real submission target, not the proxy itself. Prefer changes that are likely to survive the move to the final 8xH100 run: architecture, optimization, evaluation, serialization, and other improvements that should transfer. Avoid overfitting to quirks of the single-A10, 200-step setup.
@@ -84,9 +84,9 @@ When analyzing results, keep the full submission target in view: final roundtrip
 One arc node equals one committed code snapshot.
 
 1. **Hypothesis first.** Write your reasoning to the board with `arc hyp` before implementing anything.
-2. **Commit before running.** `arc commit` snapshots the exact code to execute. That commit becomes the node identity.
-3. **Submit the committed node.** Use `arc submit <commit>` to launch the tracked run and create the worktree-local `run.log`.
-4. **Record after completion.** After inspecting `run.log`, call `arc result` or `arc fail` to store analysis and metrics in arc's database.
+2. **Submit snapshots the worktree.** `arc submit <name>` creates the git commit that defines the node, then launches the tracked run and creates the worktree-local `run.log`.
+3. **Record after completion.** Use `arc status` to notice finished remote runs, `arc tail <commit>` to inspect the log, then call `arc result --verdict=...` for valid runs or `arc fail` for hard failures.
+4. **Archive stale leaves when needed.** Use `arc archive <commit>` to hide dead-end leaf nodes from the default tree view without deleting history.
 5. **Bug fix = new node.** If you fix a bug and rerun, that is a new child commit. Record the failure first with `arc fail`, then continue from the failed node or its child.
 
 ## Scratch work
@@ -99,3 +99,9 @@ import math
 print(math.sqrt(2))
 PY
 ```
+
+## Gotcha!
+
+1. Optimize for direction, not proxy score. The A10 proxy is for ranking ideas quickly. Don't inflate scores by increasing batch size, iterations, or compute — those aren't ML insights and won't differentiate on 8xH100. Keep proxy settings (200 iters, 262K batch) fixed.
+2. Work asynchronously. Don't sleep-wait for a batch of runs to finish. Check what's done, record it, brainstorm, launch new experiments. Every minute sleeping is a minute not iterating.
+3. One change per experiment is sacred, but knowing when to combine is the real skill. The tree structure made single-variable experiments easy. The harder question was: after 3 independent experiments each gain +0.01, do you combine all three or test pairs? Stacking greedily (always build on best) could work but may miss interaction effects.

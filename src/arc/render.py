@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from arc.models import Direction, Node, NodeRecord
+from arc.models import Direction, Node, NodeRecord, RemoteRunRecord
 from arc.text import format_float, format_signed_delta, indent_block
 from arc.timeutil import format_elapsed
+
+STATUS_MARKERS = {
+    "committed": "●",
+    "running": "◌",
+    "completed": "✓",
+    "failed": "✗",
+}
 
 
 def metric_delta(
@@ -31,7 +38,11 @@ def choose_best_leaf(
     leaves = [
         record
         for record in records
-        if not children.get(record.node.commit) and record.node.status == "completed"
+        if (
+            not children.get(record.node.commit)
+            and record.node.status == "completed"
+            and record.node.archived_at is None
+        )
     ]
     candidates = [
         record
@@ -56,6 +67,7 @@ def render_tree(
     direction: Direction,
     main_commit: str | None,
     status_filter: str | None,
+    archived_only: bool,
     depth: int | None,
     leaves_only: bool,
 ) -> str:
@@ -70,9 +82,11 @@ def render_tree(
         siblings.sort(key=lambda item: (item.node.created_at, item.node.commit))
 
     selected: set[str] = set()
-    if status_filter or leaves_only:
+    if status_filter or archived_only or leaves_only:
         for record in records:
             is_leaf = not children.get(record.node.commit)
+            if archived_only and record.node.archived_at is None:
+                continue
             if status_filter and record.node.status != status_filter:
                 continue
             if leaves_only and not is_leaf:
@@ -121,6 +135,8 @@ def render_tree(
 
     for index, root in enumerate(roots):
         visit(root, "", index == len(roots) - 1, 0)
+    if not lines:
+        return "No experiments."
     return "\n".join(lines)
 
 
@@ -131,31 +147,23 @@ def _tree_label(
     main_commit: str | None,
 ) -> str:
     node = record.node
-    symbol = ""
-    if node.parent is None:
-        symbol = "●"
-    elif node.commit == main_commit:
-        symbol = "★"
-    elif node.status == "running":
-        symbol = "◌"
-    elif node.commit == best_leaf:
-        symbol = "✓"
+    status_symbol = STATUS_MARKERS.get(node.status, "•")
+    if node.status == "completed" and node.verdict == "unsupported":
+        status_symbol = "○"
+    prefix = status_symbol if node.archived_at is None else f"◦{status_symbol}"
 
     metric = ""
     if metric_name and metric_name in record.metrics:
         metric = f" ({format_float(record.metrics[metric_name])})"
 
-    suffix = ""
-    if node.commit == best_leaf and node.parent is not None:
-        suffix = "best"
-    if node.commit == main_commit and node.parent is not None:
-        suffix = "main"
-    if node.status == "failed":
-        suffix = "failed"
+    labels: list[str] = []
+    if node.commit == main_commit:
+        labels.append("main")
+    if node.commit == best_leaf:
+        labels.append("best")
+    label_prefix = f" ({', '.join(labels)})" if labels else ""
 
-    left = f"{symbol} " if symbol else ""
-    right = f"{metric}{f' {suffix}' if suffix else ''}"
-    return f"{left}{node.commit} {node.name}{right}".rstrip()
+    return f"{prefix}{label_prefix} {node.commit} {node.name}{metric}".rstrip()
 
 
 def render_show(
@@ -169,6 +177,8 @@ def render_show(
         f"Parent:      {record.node.parent or '-'}",
         f"Name:        {record.node.name}",
         f"Status:      {record.node.status}",
+        f"Verdict:     {record.node.verdict or '-'}",
+        f"Archived:    {record.node.archived_at or '-'}",
         f"Worktree:    {record.node.worktree}",
         f"Created:     {record.node.created_at}",
         f"Completed:   {record.node.completed_at or '-'}",
@@ -215,6 +225,8 @@ def render_report(
     for index, record in enumerate(path):
         node = record.node
         lines.append(f"── {node.commit} {node.name} " + "─" * 30)
+        if node.verdict:
+            lines.append(f"verdict: {node.verdict}")
         if metric_name and metric_name in record.metrics:
             current = record.metrics[metric_name]
             previous = path[index - 1].metrics.get(metric_name) if index > 0 else None
@@ -241,7 +253,9 @@ def render_report(
 
 
 def render_status(
-    running: list[NodeRecord],
+    running: list[RemoteRunRecord],
+    finished_remote: list[RemoteRunRecord],
+    failed_remote: list[RemoteRunRecord],
     completed: list[NodeRecord],
     *,
     metric_name: str | None,
@@ -249,9 +263,37 @@ def render_status(
     lines: list[str] = []
     lines.append(f"Running ({len(running)}):")
     if running:
-        for record in running:
+        for item in running:
+            record = item.record
             elapsed = format_elapsed(record.node.created_at)
-            lines.append(f"  {record.node.commit}  {record.node.name}  {elapsed} elapsed")
+            lines.append(
+                f"  {record.node.commit}  {record.node.name}  {elapsed} elapsed  log: {item.log_path}"
+            )
+    else:
+        lines.append("  -")
+
+    lines.append("")
+    lines.append(f"Remote Finished, Awaiting `arc result` ({len(finished_remote)}):")
+    if finished_remote:
+        for item in finished_remote:
+            record = item.record
+            metric = (
+                f"{metric_name}: {format_float(item.metrics.get(metric_name))}"
+                if metric_name and metric_name in item.metrics
+                else "finished"
+            )
+            lines.append(
+                f"  {record.node.commit}  {record.node.name}  {metric}  log: {item.log_path}"
+            )
+    else:
+        lines.append("  -")
+
+    lines.append("")
+    lines.append(f"Remote Failed, Awaiting `arc fail` ({len(failed_remote)}):")
+    if failed_remote:
+        for item in failed_remote:
+            record = item.record
+            lines.append(f"  {record.node.commit}  {record.node.name}  log: {item.log_path}")
     else:
         lines.append("  -")
 
@@ -264,7 +306,8 @@ def render_status(
                 if metric_name and metric_name in record.metrics
                 else record.node.status
             )
-            lines.append(f"  {record.node.commit}  {record.node.name}  {metric}")
+            verdict = f"  [{record.node.verdict}]" if record.node.verdict else ""
+            lines.append(f"  {record.node.commit}  {record.node.name}  {metric}{verdict}")
     else:
         lines.append("  -")
     return "\n".join(lines)

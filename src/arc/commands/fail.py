@@ -19,6 +19,8 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
     record = app.store.get_node_record(args.commit)
     if record is None:
         raise ArcError(f"Unknown commit: {args.commit}")
+    if record.node.archived_at is not None:
+        raise ArcError(f"Cannot record failure for archived node `{record.node.commit}`.")
     if record.node.status not in {"committed", "running"}:
         raise ArcError(f"Cannot record failure from status `{record.node.status}`.")
 
@@ -31,6 +33,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
         status="failed",
         analysis=analysis,
         completed_at=completed_at,
+        verdict=None,
     )
 
     print(f"Recorded failure for {record.node.commit} ({record.node.name})")

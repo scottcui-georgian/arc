@@ -42,6 +42,8 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
             worktree=".",
             created_at=created_at,
             completed_at=None,
+            verdict=None,
+            archived_at=None,
         )
     )
     app.store.set_meta("main", root_commit)

@@ -20,8 +20,12 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
     target = app.store.get_node_record(args.commit)
     if target is None:
         raise ArcError(f"Unknown commit: {args.commit}")
+    if target.node.archived_at is not None:
+        raise ArcError("Archived experiments cannot be promoted.")
     if target.node.status != "completed":
         raise ArcError("Only completed experiments can be promoted.")
+    if target.node.verdict == "unsupported":
+        raise ArcError("Unsupported completed experiments cannot be promoted.")
 
     previous_main_commit = app.main_commit()
     previous_main = (
