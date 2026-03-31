@@ -73,8 +73,8 @@ arc submit <n>
 
 If data preparation is needed, stop and seek for help.
 
-Treat the single-A10 run as a proxy for the real 8xH100 target. Prefer changes that are likely to transfer to the final submission setting, and avoid tuning specifically for quirks of this proxy.
-Do not treat A10 training or evaluation wallclock as hard local pass/fail gates. They are directional signals for the final 8xH100 run. Artifact bytes still matter directly.
+Treat the single-A100-40GB run as a proxy for the real 8xH100 target. Prefer changes that are likely to transfer to the final submission setting, and avoid tuning specifically for quirks of this proxy.
+Do not treat A100-40GB training or evaluation wallclock as hard local pass/fail gates. They are directional signals for the final 8xH100 run. Artifact bytes still matter directly.
 
 While a run is in progress, you can prepare and launch the next experiment from another worktree. Use `arc status` to see which nodes are still active and which finished remotely and now need `arc result` or `arc fail`.
 

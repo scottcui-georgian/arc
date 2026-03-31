@@ -66,7 +66,7 @@ def validate_name(name: str) -> str:
 
 def worktree_stamp(now: datetime | None = None) -> str:
     current = now or datetime.now(UTC)
-    return current.strftime("%Y%m%d")
+    return current.strftime("%Y%m%d-%H%M")
 
 
 def worktree_dir_name(name: str, now: datetime | None = None) -> str:

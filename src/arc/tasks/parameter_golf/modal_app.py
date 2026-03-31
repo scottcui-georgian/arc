@@ -19,9 +19,9 @@ from typing import Any
 import modal
 
 APP_NAME = "autoresearch-parameter-golf"
-GPU_TYPE = "A10"
+GPU_TYPE = "A100-40GB"
 REMOTE_CPU = 4
-REMOTE_MEMORY_MIB = 10 * 1024
+REMOTE_MEMORY_MIB = 8 * 1024
 REMOTE_TASK_DIR = "/root/task"
 VOLUME_ROOT = "/cache-home"
 VOLUME_RUNS_ROOT = f"{VOLUME_ROOT}/parameter-golf-runs"
@@ -96,6 +96,7 @@ def _runtime_env_from_client() -> dict[str, str]:
     run_id = os.environ.get("ARC_PARAMETER_GOLF_RUN_ID")
     if run_id:
         result["ARC_PARAMETER_GOLF_RUN_ID"] = run_id
+    result["GRAD_ACCUM_STEPS"] = "4"
     return result
 
 
