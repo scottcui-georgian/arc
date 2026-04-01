@@ -35,7 +35,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
     create_worktree(app.paths.repo_root, parent_record.node.commit, branch_name, worktree_path)
 
     print(f"Created worktree: {app.relative_path(worktree_path)}")
-    print(f"Parent: {parent_record.node.commit}")
+    print(f"Parent: {app.display_commit(parent_record.node.commit)}")
     print("")
     print(f"cd {app.relative_path(worktree_path)} to start working.")
     return 0

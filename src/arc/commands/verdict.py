@@ -40,7 +40,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
     )
     previous = record.node.verdict or "-"
     if record.node.verdict == verdict:
-        print(f"Verdict unchanged for {record.node.commit} ({record.node.name})")
+        print(f"Verdict unchanged for {app.display_commit(record.node.commit)} ({record.node.name})")
         print(f"Verdict: {previous}")
         for note in notes:
             print(f"Note: {note}")
@@ -48,7 +48,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
 
     app.store.upsert_metrics(record.node.commit, metrics)
     app.store.update_node(record.node.commit, verdict=verdict)
-    print(f"Updated verdict for {record.node.commit} ({record.node.name})")
+    print(f"Updated verdict for {app.display_commit(record.node.commit)} ({record.node.name})")
     print(f"Verdict: {previous} → {verdict}")
     for note in notes:
         print(f"Note: {note}")

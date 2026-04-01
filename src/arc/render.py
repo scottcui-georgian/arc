@@ -4,7 +4,7 @@ from collections.abc import Callable
 from collections import defaultdict
 
 from arc.models import Direction, Node, NodeRecord, RemoteRunRecord
-from arc.text import format_float, format_signed_delta, indent_block
+from arc.text import format_commit, format_float, format_signed_delta, indent_block
 from arc.timeutil import format_elapsed
 
 STATUS_MARKERS = {
@@ -183,7 +183,7 @@ def _tree_label(
         labels.append("best")
     label_prefix = f" ({', '.join(labels)})" if labels else ""
 
-    return f"{prefix}{label_prefix} {node.commit} {node.name}{metric}".rstrip()
+    return f"{prefix}{label_prefix} {format_commit(node.commit)} {node.name}{metric}".rstrip()
 
 
 def render_show(
@@ -231,7 +231,7 @@ def render_report(
     metric_name: str | None,
     format_metric_value: Callable[[str, float], str] = _default_metric_formatter,
 ) -> str:
-    commits = " → ".join(record.node.commit for record in path)
+    commits = " → ".join(format_commit(record.node.commit) for record in path)
     start_metric = path[0].metrics.get(metric_name) if metric_name else None
     end_metric = path[-1].metrics.get(metric_name) if metric_name else None
     summary = f"{max(0, len(path) - 1)} experiments"
@@ -249,7 +249,7 @@ def render_report(
 
     for index, record in enumerate(path):
         node = record.node
-        lines.append(f"── {node.commit} {node.name} " + "─" * 30)
+        lines.append(f"── {format_commit(node.commit)} {node.name} " + "─" * 30)
         if node.verdict:
             lines.append(f"verdict: {node.verdict}")
         if metric_name and metric_name in record.metrics:
@@ -294,7 +294,7 @@ def render_status(
             record = item.record
             elapsed = format_elapsed(record.node.created_at)
             lines.append(
-                f"  {record.node.commit}  {record.node.name}  {elapsed} elapsed  log: {item.log_path}"
+                f"  {format_commit(record.node.commit)}  {record.node.name}  {elapsed} elapsed  log: {item.log_path}"
             )
     else:
         lines.append("  -")
@@ -310,7 +310,7 @@ def render_status(
                 else "finished"
             )
             lines.append(
-                f"  {record.node.commit}  {record.node.name}  {metric}  log: {item.log_path}"
+                f"  {format_commit(record.node.commit)}  {record.node.name}  {metric}  log: {item.log_path}"
             )
     else:
         lines.append("  -")
@@ -320,7 +320,7 @@ def render_status(
     if missing_remote:
         for item in missing_remote:
             record = item.record
-            lines.append(f"  {record.node.commit}  {record.node.name}  log: {item.log_path}")
+            lines.append(f"  {format_commit(record.node.commit)}  {record.node.name}  log: {item.log_path}")
     else:
         lines.append("  -")
 
@@ -329,7 +329,7 @@ def render_status(
     if failed_remote:
         for item in failed_remote:
             record = item.record
-            lines.append(f"  {record.node.commit}  {record.node.name}  log: {item.log_path}")
+            lines.append(f"  {format_commit(record.node.commit)}  {record.node.name}  log: {item.log_path}")
     else:
         lines.append("  -")
 
@@ -343,7 +343,7 @@ def render_status(
                 else record.node.status
             )
             verdict = f"  [{record.node.verdict}]" if record.node.verdict else ""
-            lines.append(f"  {record.node.commit}  {record.node.name}  {metric}{verdict}")
+            lines.append(f"  {format_commit(record.node.commit)}  {record.node.name}  {metric}{verdict}")
     else:
         lines.append("  -")
 
@@ -356,7 +356,7 @@ def render_status(
                 if metric_name and metric_name in record.metrics
                 else record.node.status
             )
-            lines.append(f"  {record.node.commit}  {record.node.name}  {metric}")
+            lines.append(f"  {format_commit(record.node.commit)}  {record.node.name}  {metric}")
     else:
         lines.append("  -")
     return "\n".join(lines)

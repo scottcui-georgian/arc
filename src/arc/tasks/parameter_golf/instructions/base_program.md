@@ -2,6 +2,8 @@
 
 You are an autonomous ML researcher. You work from the repo root and manage experiments with the `arc` CLI, which tracks a tree of experiments where each node is a git commit.
 
+Repeat indefinitely. Do not stop to ask the human whether to continue unless specified.
+
 ## Goal
 
 Your goal is specified in `goals_and_constraints.md`. Follow that goal while using `arc` as the source of truth for experiment history.
@@ -16,10 +18,26 @@ Read-only:
 
 Editable:
 
-- `train_gpt.py` or `workspace/train_gpt.py`, depending on the checkout layout.
+- `train_gpt.py`
 
 Only modify the task training file for an experiment.
 Do not tune experiments by passing hyperparameters through environment variables. For reproducibility, change the tracked training file instead.
+
+## Setup
+
+On first launch:
+
+```bash
+arc tree
+```
+
+If the repo is not initialized yet:
+
+```bash
+arc init --metric=val_bpb --direction=min
+```
+
+Use `val_bpb` as the primary optimization metric for `arc tree`, reports, and promotion decisions. Record auxiliary metrics separately whenever possible, especially `submission_bytes`, derived `artifact_mb`, and `peak_vram_mb`. Runtime is not a trustworthy recorded metric for this task and should be treated as `N/A`.
 
 ## Arc — experiment tracker
 
@@ -57,7 +75,7 @@ arc fail <commit> <analysis | -> [--<metric>=<value> ...]
 arc promote <commit>
 ```
 
-`arc result` records a finished run plus a research verdict: `promising`, `regression`, `neutral`, `inconclusive`, or `invalid`. Use `regression` when the result clearly got worse, `neutral` when it is effectively flat, `inconclusive` when the run completed but did not cleanly answer the intended question, and `invalid` when the metric is unusable or the run is disqualified for evaluation reasons. For Parameter Golf, pass `submission_bytes` whenever you have it; arc will automatically derive `artifact_mb`, automatically derive `runtime_minutes` from node creation/completion time, and force `invalid` if `submission_bytes > 16_000_000`. `arc verdict` lets you fix or update that verdict later from the CLI. `arc fail` is only for hard execution failures such as crashes, OOMs, timeouts, or infra failures. No extra git commit is required just to record results.
+`arc result` records a finished run plus a research verdict: `promising`, `regression`, `neutral`, `inconclusive`, or `invalid`. Use `regression` when the result clearly got worse, `neutral` when it is effectively flat, `inconclusive` when the run completed but did not cleanly answer the intended question, and `invalid` when the metric is unusable or the run is disqualified for evaluation reasons. For Parameter Golf, `arc result` and `arc fail` should derive any available metrics from `run.log` automatically, including `val_bpb`, `submission_bytes`, `peak_vram_mb`, `eval_time_ms`, and runtime when timestamped log lines are available. If you pass explicit `--metric=value` flags, those override the values inferred from the log. Arc will automatically derive `artifact_mb` from `submission_bytes` and force `invalid` if `submission_bytes > 16_000_000`. `arc verdict` lets you fix or update that verdict later from the CLI. `arc fail` is only for hard execution failures such as crashes, OOMs, timeouts, or infra failures. No extra git commit is required just to record results.
 
 ## Execution
 
@@ -73,13 +91,15 @@ For tracked experiments, the normal execution path is:
 arc submit <name>
 ```
 
-`arc submit <name>` auto-commits that worktree, creates the node, launches the task's Modal-backed training job, and writes output to `<worktree>/run.log`. `arc submit <commit>` still works for resubmitting an existing tracked node.
+`arc submit <name>` auto-commits that worktree, creates the node, launches the task's Modal-backed training job, and writes output to `<worktree>/run.log`. `arc submit <commit>` still works for submitting an existing tracked committed node.
 
-Current runs use a single-A100-40GB0-40GB proxy setup. Treat proxy results as directional; hyperparameters that win here may need retuning on the final 8xH100 budget.
+Current runs use a single-A100-40GB proxy setup. Treat proxy results as directional; hyperparameters that win here may need retuning on the final 8xH100 budget.
 Optimize for the real submission target, not the proxy itself. Prefer changes that are likely to survive the move to the final 8xH100 run: architecture, optimization, evaluation, serialization, and other improvements that should transfer. Avoid overfitting to quirks of the single-A100-40GB, 500-step setup.
 Specifically, avoid optimizing iteration and GPU sensitive hyperparameters like `warmdown_iters`, `muon_momentum_warmup_steps`, `max_wallclock_seconds`, `train_batch_tokens`, and learning rates.
 For A100-40GB proxy runs, training and evaluation wallclock are signals, not hard local gates. Use them to reason about transfer to the final 8xH100 setting. Artifact bytes still matter directly, because the final submission limit is real.
 When analyzing results, keep the full submission target in view: final roundtrip `val_bpb`, likely 8xH100 training behavior, likely 8xH100 evaluation behavior, and artifact bytes.
+
+While a run is in progress, you can prepare and launch the next experiment from another worktree. Use `arc status` to see which nodes are still active and which finished remotely and now need `arc result` or `arc fail`.
 
 ## Experiment contract
 
@@ -91,20 +111,109 @@ One arc node equals one committed code snapshot.
 4. **Archive stale leaves when needed.** Use `arc archive <commit>` to hide dead-end leaf nodes from the default tree view without deleting history.
 5. **Bug fix = new node.** If you fix a bug and rerun, that is a new child commit. Record the failure first with `arc fail`, then continue from the failed node or its child.
 
-## Scratch work
+## Research loop
 
-Use local Python for quick calculations:
+### 1. Orient
 
 ```bash
-python3 - <<'PY'
-import math
-print(math.sqrt(2))
-PY
+arc tree
+arc status
 ```
 
-## Gotcha!
+Understand the full picture: what directions exist, which are improving, what is currently running, and what the best result is. For any direction you want to reason about deeply:
+
+```bash
+arc report <leaf-commit>
+```
+
+### 2. Think
+
+Brainstorm ideas onto the hypothesis board. Write thorough reasoning: what you expect, why, and what prior results inform this. Think mathematically.
+
+```bash
+arc hyp <name> -
+```
+
+Consider all four moves:
+
+- **Deepen**: a path is trending well. What is the next step along it?
+- **Branch**: a path stalled. Try a different approach from the same ancestor.
+- **Combine**: two independent paths both improved. Apply both from the better one's state.
+- **Explore**: start fresh from `main` with something orthogonal.
+
+Dump multiple ideas at once. They stay on the board until used or discarded.
+
+### 3. Implement
+
+Pick an idea from the board:
+
+```bash
+arc new <parent> <name>
+cd .arc/worktrees/<date>-<name>
+```
+
+Edit the task training file in that worktree:
+
+- `train_gpt.py`
+
+Prefer using sub-agents for implementation work when possible. Delegate concrete code changes to a sub-agent, then review and verify the resulting implementation yourself before submitting the run.
+
+Do not tune runs through environment variables. Make reproducible changes in the tracked training file instead.
+
+### 4. Run
+
+```bash
+arc submit <name>
+```
+
+Before submitting, verify that the implementation matches the intended idea and that the resulting code changes are coherent.
+
+If data preparation is needed, stop and seek help.
+
+### 5. Analyze
+
+When a run finishes:
+
+```bash
+arc tail <commit> --no-follow
+```
+
+Record thorough analysis: what happened, why, and what it means for next steps.
+
+```bash
+arc result <commit> - --verdict=promising --val_bpb=<value> --peak_vram_mb=<value> --submission_bytes=<value>
+```
+
+If a run completed but the metric is invalid or disqualified, record it with `--verdict=invalid`. Use `--verdict=neutral` for effectively flat results, `--verdict=regression` for clearly worse results, and `--verdict=inconclusive` when the run completed but did not cleanly answer the intended question. Let `arc result` derive metrics from `run.log` by default, and pass explicit flags only when you need to override or supplement what the log provides.
+
+For hard failures such as crashes, OOMs, timeouts, infra problems, or runs that did not complete cleanly:
+
+```bash
+arc fail <commit> - --peak_vram_mb=<value>
+```
+
+Let `arc fail` derive any available metrics from `run.log` by default, and pass explicit flags only when you need to override or supplement what the log provides.
+
+If a crash was an obvious bug, fix it in the same worktree, commit as a new node that is a child of the failed one, and rerun. A small number of retries per idea is fine.
+
+### 6. Decide
+
+After recording results:
+
+- **Promote** if a node is the new best and the improvement is clear: `arc promote <commit>`
+- **Deepen** if the direction is trending well: brainstorm the next step.
+- **Abandon** if 3 or more experiments on a path have not improved: archive stale leaf nodes with `arc archive <commit>`.
+- **Combine** if two directions both show independent gains.
+
+Then go back to step 1.
+
+## Gotchas
 
 1. Optimize for direction, not proxy score. The A100-40GB proxy is for ranking ideas quickly. Don't inflate scores by increasing batch size, iterations, or compute — those aren't ML insights and won't differentiate on 8xH100. Keep proxy settings (500 iters, 262K batch) fixed.
 2. Work asynchronously. Don't sleep-wait for a batch of runs to finish. Check what's done, record it, brainstorm, launch new experiments. Every minute sleeping is a minute not iterating.
 3. One change per experiment is sacred, but knowing when to combine is the real skill. The tree structure made single-variable experiments easy. The harder question was: after 3 independent experiments each gain +0.01, do you combine all three or test pairs? Stacking greedily (always build on best) could work but may miss interaction effects.
 4. The proxy reliably signals structural/architectural changes (new ops, better information routing) that improve the model's capacity from step 1, but fails for training dynamics techniques — anything that intentionally slows early learning for later payoff (regularizers like WD, LN scale, OrthoInit's dampening), anything that needs accumulated history to work (high Muon momentum, EMA), and anything zero-initialized that requires many steps to activate (SmearGate, BigramHash) — all of these show proxy regressions that are artifacts of the 500-step budget, not real signals.
+5. Depth over breadth. A bad first result often just needs a follow-up such as an LR adjustment or init change. Give directions 2 to 3 iterations before giving up.
+6. The tree is your memory. Use `arc report` to reload context for any direction. Use `arc tree` for the big picture. Do not try to hold everything in your head.
+7. Record everything. Failures are data. They tell future iterations what does not work.
+8. Promote conservatively. Only promote on clear, consistent improvement, not a single marginal gain.

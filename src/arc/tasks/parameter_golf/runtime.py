@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -119,15 +120,27 @@ class ParameterGolfModalRunner:
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{utc_now_iso()}] submitting Parameter Golf train via Modal\n")
             handle.flush()
-            process = subprocess.Popen(
-                cmd,
-                cwd=str(self.repo_root),
-                env=env,
-                stdout=handle,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                text=True,
-            )
+
+        log_wrapper = Path(__file__).with_name("log_wrapper.py")
+        wrapper_cmd = [
+            sys.executable,
+            str(log_wrapper),
+            "--log-path",
+            str(log_path),
+            "--cwd",
+            str(self.repo_root),
+            "--",
+            *cmd,
+        ]
+        process = subprocess.Popen(
+            wrapper_cmd,
+            cwd=str(self.repo_root),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
         return SubmitResult(
             backend="parameter-golf-modal",
             log_path=log_path,

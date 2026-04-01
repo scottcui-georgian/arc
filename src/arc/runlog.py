@@ -19,6 +19,15 @@ FAILURE_MARKERS = (
 METRIC_PATTERN = re.compile(
     r"\b(?P<name>val_loss|val_bpb):(?P<value>-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)"
 )
+EXIT_CODE_PATTERN = re.compile(r"modal run exited with code (?P<code>\d+)")
+
+
+def _latest_submission_lines(lines: list[str]) -> list[str]:
+    start = 0
+    for index, line in enumerate(lines):
+        if "submitting " in line:
+            start = index
+    return lines[start:]
 
 
 @dataclass(frozen=True)
@@ -36,6 +45,7 @@ def summarize_run_log(path: Path) -> RunLogSummary:
     except OSError:
         return RunLogSummary(state="missing")
 
+    lines = _latest_submission_lines(lines)
     metrics: dict[str, float] = {}
     saw_success = False
     saw_failure = False
@@ -50,6 +60,12 @@ def summarize_run_log(path: Path) -> RunLogSummary:
             saw_success = True
         if any(marker in line for marker in FAILURE_MARKERS):
             saw_failure = True
+        match = EXIT_CODE_PATTERN.search(line)
+        if match:
+            if int(match.group("code")) == 0:
+                saw_success = True
+            else:
+                saw_failure = True
 
     if saw_success:
         return RunLogSummary(state="finished", metrics=metrics)

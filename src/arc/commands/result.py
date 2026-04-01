@@ -10,13 +10,21 @@ from arc.timeutil import utc_now_iso
 
 
 def register(parser: argparse.ArgumentParser) -> None:
+    parser.formatter_class = argparse.RawDescriptionHelpFormatter
+    parser.description = "Record a completed experiment result and its research verdict."
+    parser.epilog = (
+        "Metric flags:\n"
+        "  Pass metrics as --name=value, for example --val_bpb=1.23.\n"
+        "  Task-specific metrics may be inferred automatically from run.log.\n"
+        "  Explicit flags override inferred values when both are present."
+    )
     parser.add_argument("commit", help="Experiment commit hash or prefix.")
-    parser.add_argument("analysis", help="Analysis text or `-` for stdin.")
+    parser.add_argument("analysis", help="Analysis text, or `-` to read it from stdin.")
     parser.add_argument(
         "--verdict",
         required=True,
         choices=("promising", "regression", "neutral", "inconclusive", "invalid"),
-        help="Research verdict for a completed run.",
+        help="Research verdict for the completed run.",
     )
 
 
@@ -32,6 +40,11 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
 
     analysis = read_text_argument(args.analysis)
     metrics = parse_metric_flags(extras)
+    inferred_metrics, inferred_notes = app.task.derive_result_metrics(
+        record.node,
+        app.node_log_path(record.node),
+    )
+    metrics = {**inferred_metrics, **metrics}
     if not metrics:
         raise ArcError("At least one metric is required for `arc result`.")
 
@@ -42,6 +55,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
         metrics=metrics,
         completed_at=completed_at,
     )
+    notes = [*inferred_notes, *notes]
     app.store.upsert_metrics(record.node.commit, metrics)
     app.store.update_node(
         record.node.commit,
@@ -51,7 +65,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
         verdict=verdict,
     )
 
-    print(f"Recorded result for {record.node.commit} ({record.node.name})")
+    print(f"Recorded result for {app.display_commit(record.node.commit)} ({record.node.name})")
     print(f"Status: {record.node.status} → completed")
     print(f"Verdict: {verdict}")
     for note in notes:
@@ -63,7 +77,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
 
 COMMAND = CommandSpec(
     name="result",
-    help="Record a completed experiment result.",
+    help="Record a completed result; infer metrics from run.log when possible.",
     register=register,
     run=run,
 )

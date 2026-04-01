@@ -11,12 +11,19 @@ from arc.timeutil import utc_now_iso
 
 
 def register(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--metric", help="Primary metric displayed in arc tree.")
+    parser.description = (
+        "Initialize arc in the current repository, create a baseline node at the current HEAD, "
+        "and configure the primary metric used by tree views and promotion decisions."
+    )
+    parser.add_argument(
+        "--metric",
+        help="Single primary metric used by `arc tree`, `arc report`, and promotion decisions.",
+    )
     parser.add_argument(
         "--direction",
         choices=("min", "max"),
         default="min",
-        help="Whether lower or higher metric values are better.",
+        help="Whether lower or higher values are better for the primary metric.",
     )
 
 
@@ -27,7 +34,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
         raise ArcError("Arc is already initialized in this repository.")
 
     app.ensure_directories()
-    app.store.initialize()
+    app.store.initialize(app.paths.repo_root)
 
     root_commit = current_head(app.paths.repo_root)
     created_at = utc_now_iso()
@@ -63,7 +70,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
 
 COMMAND = CommandSpec(
     name="init",
-    help="Initialize arc in the current repository.",
+    help="Initialize arc, create a baseline node, and set the primary metric.",
     register=register,
     run=run,
 )

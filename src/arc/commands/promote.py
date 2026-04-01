@@ -35,19 +35,19 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
     app.store.set_meta("main", target.node.commit)
     branch_updated = try_fast_forward_main(app.paths.repo_root, target.node.commit)
 
-    print(f"Promoted {target.node.commit} ({target.node.name}) to main.")
+    print(f"Promoted {app.display_commit(target.node.commit)} ({target.node.name}) to main.")
     if previous_main is not None:
         if metric_name and metric_name in previous_main.metrics:
             print(
-                f"Previous main: {previous_main.node.commit} "
+                f"Previous main: {app.display_commit(previous_main.node.commit)} "
                 f"({previous_main.metrics[metric_name]:g})"
             )
         else:
-            print(f"Previous main: {previous_main.node.commit}")
+            print(f"Previous main: {app.display_commit(previous_main.node.commit)}")
     if metric_name and metric_name in target.metrics:
-        print(f"New main:      {target.node.commit} ({target.metrics[metric_name]:g})")
+        print(f"New main:      {app.display_commit(target.node.commit)} ({target.metrics[metric_name]:g})")
     else:
-        print(f"New main:      {target.node.commit}")
+        print(f"New main:      {app.display_commit(target.node.commit)}")
     print(f"Git main:      {'fast-forwarded' if branch_updated else 'unchanged'}")
     return 0
 

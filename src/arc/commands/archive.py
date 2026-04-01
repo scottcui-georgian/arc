@@ -34,7 +34,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
     archived_at = utc_now_iso()
     app.store.archive_node(record.node.commit, archived_at)
 
-    print(f"Archived {record.node.commit} ({record.node.name})")
+    print(f"Archived {app.display_commit(record.node.commit)} ({record.node.name})")
     print(f"Archived: {archived_at}")
     return 0
 

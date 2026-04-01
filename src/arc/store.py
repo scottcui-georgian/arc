@@ -49,7 +49,7 @@ class ArcStore:
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
-    def initialize(self) -> None:
+    def initialize(self, repo_root: Path | None = None) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(
@@ -98,6 +98,59 @@ class ArcStore:
                 """
             )
             self._ensure_nodes_schema(connection)
+            if repo_root is not None:
+                self._normalize_commit_ids(connection, repo_root)
+
+    def _normalize_commit_ids(self, connection: sqlite3.Connection, repo_root: Path) -> None:
+        from arc.git import full_rev
+
+        rows = connection.execute('SELECT "commit", "parent" FROM nodes').fetchall()
+        if not rows:
+            return
+
+        mapping: dict[str, str] = {}
+        for row in rows:
+            commit = str(row["commit"])
+            mapping.setdefault(commit, full_rev(repo_root, commit))
+            if row["parent"] is not None:
+                parent = str(row["parent"])
+                mapping.setdefault(parent, full_rev(repo_root, parent))
+
+        changed = {old: new for old, new in mapping.items() if old != new}
+        if not changed:
+            return
+
+        placeholders = {old: f"__arc_migrate__{index}__" for index, old in enumerate(changed, start=1)}
+        connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            for old, placeholder in placeholders.items():
+                connection.execute('UPDATE nodes SET "commit" = ? WHERE "commit" = ?', (placeholder, old))
+                connection.execute('UPDATE nodes SET "parent" = ? WHERE "parent" = ?', (placeholder, old))
+                connection.execute('UPDATE metrics SET "commit" = ? WHERE "commit" = ?', (placeholder, old))
+                connection.execute(
+                    'UPDATE archived_nodes SET "commit" = ? WHERE "commit" = ?',
+                    (placeholder, old),
+                )
+                connection.execute(
+                    'UPDATE meta SET value = ? WHERE key = ? AND value = ?',
+                    (placeholder, "main", old),
+                )
+
+            for old, new in changed.items():
+                placeholder = placeholders[old]
+                connection.execute('UPDATE nodes SET "commit" = ? WHERE "commit" = ?', (new, placeholder))
+                connection.execute('UPDATE nodes SET "parent" = ? WHERE "parent" = ?', (new, placeholder))
+                connection.execute('UPDATE metrics SET "commit" = ? WHERE "commit" = ?', (new, placeholder))
+                connection.execute(
+                    'UPDATE archived_nodes SET "commit" = ? WHERE "commit" = ?',
+                    (new, placeholder),
+                )
+                connection.execute(
+                    'UPDATE meta SET value = ? WHERE key = ? AND value = ?',
+                    (new, "main", placeholder),
+                )
+        finally:
+            connection.execute("PRAGMA foreign_keys = ON")
 
     def _ensure_nodes_schema(self, connection: sqlite3.Connection) -> None:
         columns = {

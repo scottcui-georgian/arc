@@ -41,8 +41,7 @@ entrypoint, while `train` launches the task's Modal GPU training job.
 
 `arc submit <name>` now auto-commits that experiment worktree before
 launching it. `arc submit <commit>` still submits an existing tracked
-node, and `arc submit --retry <commit>` resubmits a node still marked
-`running`.
+committed node.
 
 Useful follow-up commands:
 

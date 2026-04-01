@@ -13,6 +13,10 @@ def load_task_module(name: str) -> TaskModule:
     try:
         module = importlib.import_module(module_name)
     except ModuleNotFoundError as exc:
+        if exc.name != module_name:
+            raise ArcError(
+                f"Failed to import task module `{name}`: missing dependency `{exc.name}`."
+            ) from exc
         raise ArcError(f"Unknown task module: {name}") from exc
 
     if name == "default":

@@ -9,6 +9,7 @@ from arc.models import Direction, Node
 from arc.paths import ArcPaths, build_paths, relative_to_repo, validate_name
 from arc.store import ArcStore
 from arc.tasks.registry import infer_task_module_name, load_task_module
+from arc.text import format_commit
 
 
 @dataclass
@@ -22,7 +23,7 @@ class ArcApp:
         paths = build_paths(start)
         store = ArcStore(paths.db_path)
         if store.exists():
-            store.initialize()
+            store.initialize(paths.repo_root)
         task_name = os.environ.get("ARC_TASK")
         if task_name is None and store.exists():
             task_name = store.get_meta("task")
@@ -76,6 +77,9 @@ class ArcApp:
 
     def relative_path(self, path: Path) -> str:
         return relative_to_repo(self.paths.repo_root, path)
+
+    def display_commit(self, commit: str) -> str:
+        return format_commit(commit)
 
     def resolve_main_or_commit(self, value: str) -> str:
         if value == "main":

@@ -33,10 +33,15 @@ def short_rev(repo_root: Path, rev: str, cwd: Path | None = None) -> str:
     return result.stdout.strip()
 
 
+def full_rev(repo_root: Path, rev: str, cwd: Path | None = None) -> str:
+    result = _run_git(repo_root, "rev-parse", "--verify", rev, cwd=cwd)
+    return result.stdout.strip()
+
+
 def current_head(repo_root: Path) -> str:
     if not rev_exists(repo_root, "HEAD"):
         raise ArcError("Repository has no commits yet; create an initial commit before `arc init`.")
-    return short_rev(repo_root, "HEAD")
+    return full_rev(repo_root, "HEAD")
 
 
 def rev_exists(repo_root: Path, rev: str, cwd: Path | None = None) -> bool:
@@ -49,7 +54,7 @@ def commit_parent(repo_root: Path, rev: str) -> str | None:
     parts = result.stdout.strip().split()
     if len(parts) <= 1:
         return None
-    return short_rev(repo_root, parts[1])
+    return full_rev(repo_root, parts[1])
 
 
 def create_worktree(repo_root: Path, parent: str, branch: str, worktree: Path) -> None:
@@ -68,7 +73,7 @@ def create_worktree(repo_root: Path, parent: str, branch: str, worktree: Path) -
 def commit_all(repo_root: Path, worktree: Path, message: str) -> str:
     _run_git(repo_root, "add", "-A", cwd=worktree)
     _run_git(repo_root, "commit", "-m", message, cwd=worktree)
-    return short_rev(repo_root, "HEAD", cwd=worktree)
+    return full_rev(repo_root, "HEAD", cwd=worktree)
 
 
 def current_branch(repo_root: Path, cwd: Path | None = None) -> str:
@@ -77,6 +82,17 @@ def current_branch(repo_root: Path, cwd: Path | None = None) -> str:
     if not branch:
         raise ArcError("Detached HEAD; expected a branch.")
     return branch
+
+
+def has_uncommitted_changes(repo_root: Path, cwd: Path | None = None) -> bool:
+    result = _run_git(
+        repo_root,
+        "status",
+        "--porcelain",
+        cwd=cwd,
+        check=False,
+    )
+    return bool(result.stdout.strip())
 
 
 def try_fast_forward_main(repo_root: Path, target_commit: str) -> bool:
@@ -92,7 +108,7 @@ def try_fast_forward_main(repo_root: Path, target_commit: str) -> bool:
     if has_main.returncode != 0:
         return False
 
-    main_sha = short_rev(repo_root, "refs/heads/main")
+    main_sha = full_rev(repo_root, "refs/heads/main")
     is_ancestor = _run_git(
         repo_root,
         "merge-base",
@@ -113,9 +129,12 @@ def try_fast_forward_main(repo_root: Path, target_commit: str) -> bool:
             check=False,
         ).stdout.strip()
         # `git branch -f main <rev>` fails when `main` is checked out in this worktree
-        # (Git refuses to force-move the branch you are on). Reset moves HEAD and the branch.
+        # (Git refuses to force-move the branch you are on). Use a fast-forward merge when
+        # `main` is checked out and clean so promotion never discards local changes.
         if branch == "main":
-            _run_git(repo_root, "reset", "--hard", target_commit)
+            if has_uncommitted_changes(repo_root):
+                return False
+            _run_git(repo_root, "merge", "--ff-only", target_commit)
         else:
             _run_git(repo_root, "branch", "-f", "main", target_commit)
     except ArcError:

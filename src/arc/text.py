@@ -42,3 +42,9 @@ def format_float(value: float | None) -> str:
 
 def format_signed_delta(delta: float) -> str:
     return f"{delta:+.3g}"
+
+
+def format_commit(commit: str, length: int = 12) -> str:
+    if len(commit) <= length:
+        return commit
+    return commit[:length]

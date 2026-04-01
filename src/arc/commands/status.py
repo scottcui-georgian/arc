@@ -12,7 +12,11 @@ from arc.timeutil import utc_now_iso
 
 
 def register(parser: argparse.ArgumentParser) -> None:
-    del parser
+    parser.description = (
+        "Show tracked runs by current state. For active Parameter Golf runs, this inspects "
+        "run.log to distinguish still-running jobs from remotely finished or failed jobs "
+        "that still need `arc result` or `arc fail`."
+    )
 
 
 def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
@@ -64,7 +68,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
 
 COMMAND = CommandSpec(
     name="status",
-    help="Show active experiments and recently finished runs.",
+    help="Show running experiments plus remote jobs awaiting result/fail recording.",
     register=register,
     run=run,
 )
