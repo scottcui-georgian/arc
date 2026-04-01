@@ -64,9 +64,13 @@ def _build_local_image() -> tuple[modal.Image, str]:
             "Parameter Golf task is missing both `prepare.py` and `data/cached_challenge_fineweb.py`."
         )
 
-    image = modal.Image.debian_slim(python_version="3.12").uv_sync(
-        uv_project_dir=str(task_root),
-        gpu=GPU_TYPE,
+    image = (
+        modal.Image.debian_slim(python_version="3.12")
+        .uv_sync(
+            uv_project_dir=str(task_root),
+            gpu=GPU_TYPE,
+        )
+        .uv_pip_install("zstandard")
     )
     image = image.add_local_file(
         train_file,

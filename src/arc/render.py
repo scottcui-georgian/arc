@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from collections import defaultdict
 
 from arc.models import Direction, Node, NodeRecord, RemoteRunRecord
@@ -12,6 +13,18 @@ STATUS_MARKERS = {
     "completed": "◆",
     "failed": "✗",
 }
+VERDICT_MARKERS = {
+    "regression": "○",
+    "neutral": "~",
+    "inconclusive": "?",
+    "invalid": "!",
+    "unsupported": "○",
+}
+
+
+def _default_metric_formatter(name: str, value: float) -> str:
+    del name
+    return format_float(value)
 
 
 def metric_delta(
@@ -41,6 +54,7 @@ def choose_best_leaf(
         if (
             not children.get(record.node.commit)
             and record.node.status == "completed"
+            and record.node.verdict == "promising"
             and record.node.archived_at is None
         )
     ]
@@ -70,6 +84,11 @@ def render_tree(
     archived_only: bool,
     depth: int | None,
     leaves_only: bool,
+    tree_metric_suffix: Callable[[NodeRecord, str | None], str] = lambda record, metric_name: (
+        f" ({format_float(record.metrics[metric_name])})"
+        if metric_name and metric_name in record.metrics
+        else ""
+    ),
 ) -> str:
     if not records:
         return "No experiments."
@@ -115,7 +134,9 @@ def render_tree(
         branch = ""
         if level > 0:
             branch = "└── " if is_last else "├── "
-        lines.append(f"{prefix}{branch}{_tree_label(record, metric_name, best_leaf, main_commit)}")
+        lines.append(
+            f"{prefix}{branch}{_tree_label(record, metric_name, best_leaf, main_commit, tree_metric_suffix)}"
+        )
 
         if depth is not None and level >= depth:
             return
@@ -145,16 +166,15 @@ def _tree_label(
     metric_name: str | None,
     best_leaf: str | None,
     main_commit: str | None,
+    tree_metric_suffix: Callable[[NodeRecord, str | None], str],
 ) -> str:
     node = record.node
     status_symbol = STATUS_MARKERS.get(node.status, "•")
-    if node.status == "completed" and node.verdict == "unsupported":
-        status_symbol = "○"
+    if node.status == "completed" and node.verdict in VERDICT_MARKERS:
+        status_symbol = VERDICT_MARKERS[node.verdict]
     prefix = status_symbol if node.archived_at is None else f"◦{status_symbol}"
 
-    metric = ""
-    if metric_name and metric_name in record.metrics:
-        metric = f" ({format_float(record.metrics[metric_name])})"
+    metric = tree_metric_suffix(record, metric_name)
 
     labels: list[str] = []
     if node.commit == main_commit:
@@ -171,6 +191,7 @@ def render_show(
     *,
     parent: NodeRecord | None,
     main: NodeRecord | None,
+    format_metric_value: Callable[[str, float], str] = _default_metric_formatter,
 ) -> str:
     lines = [
         f"Commit:      {record.node.commit}",
@@ -189,11 +210,11 @@ def render_show(
         for name, value in sorted(record.metrics.items()):
             details: list[str] = []
             if parent and name in parent.metrics:
-                details.append(f"parent: {format_float(parent.metrics[name])}")
+                details.append(f"parent: {format_metric_value(name, parent.metrics[name])}")
             if main and name in main.metrics:
-                details.append(f"main: {format_float(main.metrics[name])}")
+                details.append(f"main: {format_metric_value(name, main.metrics[name])}")
             detail_suffix = f"  ({', '.join(details)})" if details else ""
-            lines.append(f"  {name}: {format_float(value)}{detail_suffix}")
+            lines.append(f"  {name}: {format_metric_value(name, value)}{detail_suffix}")
     else:
         lines.append("  -")
 
@@ -208,13 +229,17 @@ def render_report(
     path: list[NodeRecord],
     *,
     metric_name: str | None,
+    format_metric_value: Callable[[str, float], str] = _default_metric_formatter,
 ) -> str:
     commits = " → ".join(record.node.commit for record in path)
     start_metric = path[0].metrics.get(metric_name) if metric_name else None
     end_metric = path[-1].metrics.get(metric_name) if metric_name else None
     summary = f"{max(0, len(path) - 1)} experiments"
     if metric_name and start_metric is not None and end_metric is not None:
-        summary += f", {format_float(start_metric)} → {format_float(end_metric)}"
+        summary += (
+            f", {format_metric_value(metric_name, start_metric)}"
+            f" → {format_metric_value(metric_name, end_metric)}"
+        )
 
     lines = [
         f"═══ Path: {commits} ═══",
@@ -232,7 +257,7 @@ def render_report(
             previous = path[index - 1].metrics.get(metric_name) if index > 0 else None
             delta = metric_delta(current, previous)
             suffix = f" ({delta} from parent)" if delta is not None and index > 0 else ""
-            lines.append(f"{metric_name}: {format_float(current)}{suffix}")
+            lines.append(f"{metric_name}: {format_metric_value(metric_name, current)}{suffix}")
 
         extra_metrics = [
             (name, value)
@@ -240,7 +265,7 @@ def render_report(
             if name != metric_name
         ]
         for name, value in extra_metrics:
-            lines.append(f"{name}: {format_float(value)}")
+            lines.append(f"{name}: {format_metric_value(name, value)}")
 
         if node.hypothesis:
             lines.extend(["", "Hypothesis:", indent_block(node.hypothesis)])
@@ -256,7 +281,9 @@ def render_status(
     running: list[RemoteRunRecord],
     finished_remote: list[RemoteRunRecord],
     failed_remote: list[RemoteRunRecord],
+    missing_remote: list[RemoteRunRecord],
     completed: list[NodeRecord],
+    failed: list[NodeRecord],
     *,
     metric_name: str | None,
 ) -> str:
@@ -289,6 +316,15 @@ def render_status(
         lines.append("  -")
 
     lines.append("")
+    lines.append(f"Remote Missing Log / Unknown ({len(missing_remote)}):")
+    if missing_remote:
+        for item in missing_remote:
+            record = item.record
+            lines.append(f"  {record.node.commit}  {record.node.name}  log: {item.log_path}")
+    else:
+        lines.append("  -")
+
+    lines.append("")
     lines.append(f"Remote Failed, Awaiting `arc fail` ({len(failed_remote)}):")
     if failed_remote:
         for item in failed_remote:
@@ -308,6 +344,19 @@ def render_status(
             )
             verdict = f"  [{record.node.verdict}]" if record.node.verdict else ""
             lines.append(f"  {record.node.commit}  {record.node.name}  {metric}{verdict}")
+    else:
+        lines.append("  -")
+
+    lines.append("")
+    lines.append(f"Failed since last check ({len(failed)}):")
+    if failed:
+        for record in failed:
+            metric = (
+                f"{metric_name}: {format_float(record.metrics[metric_name])}"
+                if metric_name and metric_name in record.metrics
+                else record.node.status
+            )
+            lines.append(f"  {record.node.commit}  {record.node.name}  {metric}")
     else:
         lines.append("  -")
     return "\n".join(lines)

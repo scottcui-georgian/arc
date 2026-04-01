@@ -8,7 +8,14 @@ from arc.errors import ArcError
 from arc.models import Node, NodeRecord, Status, Verdict
 
 STATUSES: tuple[Status, ...] = ("committed", "running", "completed", "failed")
-VERDICTS: tuple[Verdict, ...] = ("promising", "unsupported")
+VERDICTS: tuple[Verdict, ...] = (
+    "promising",
+    "regression",
+    "neutral",
+    "inconclusive",
+    "invalid",
+    "unsupported",
+)
 NODE_COLUMNS = """
     nodes."commit",
     nodes."parent",
@@ -57,7 +64,16 @@ class ArcStore:
                     worktree TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     completed_at TEXT,
-                    verdict TEXT CHECK (verdict IN ('promising', 'unsupported'))
+                    verdict TEXT CHECK (
+                        verdict IN (
+                            'promising',
+                            'regression',
+                            'neutral',
+                            'inconclusive',
+                            'invalid',
+                            'unsupported'
+                        )
+                    )
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes("parent");
@@ -81,15 +97,138 @@ class ArcStore:
                 );
                 """
             )
-            self._ensure_nodes_verdict_column(connection)
+            self._ensure_nodes_schema(connection)
 
-    def _ensure_nodes_verdict_column(self, connection: sqlite3.Connection) -> None:
+    def _ensure_nodes_schema(self, connection: sqlite3.Connection) -> None:
         columns = {
             str(row["name"])
             for row in connection.execute('PRAGMA table_info("nodes")').fetchall()
         }
-        if "verdict" not in columns:
-            connection.execute('ALTER TABLE nodes ADD COLUMN verdict TEXT')
+        if "verdict" not in columns or not self._nodes_table_supports_verdicts(connection):
+            self._rebuild_nodes_tables(connection, has_verdict="verdict" in columns)
+
+    def _nodes_table_supports_verdicts(self, connection: sqlite3.Connection) -> bool:
+        row = connection.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'nodes'
+            """
+        ).fetchone()
+        if row is None or row["sql"] is None:
+            return False
+        create_sql = str(row["sql"]).lower()
+        if "check" not in create_sql:
+            return True
+        return all(
+            verdict in create_sql
+            for verdict in ("'regression'", "'neutral'", "'inconclusive'", "'invalid'")
+        )
+
+    def _rebuild_nodes_tables(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        has_verdict: bool,
+    ) -> None:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            verdict_backup = ", verdict" if has_verdict else ", NULL AS verdict"
+            connection.executescript(
+                f"""
+                CREATE TABLE nodes_backup AS
+                SELECT
+                    "commit",
+                    "parent",
+                    name,
+                    status,
+                    hypothesis,
+                    analysis,
+                    worktree,
+                    created_at,
+                    completed_at
+                    {verdict_backup}
+                FROM nodes;
+
+                CREATE TABLE metrics_backup AS
+                SELECT "commit", name, value
+                FROM metrics;
+
+                CREATE TABLE archived_nodes_backup AS
+                SELECT "commit", archived_at
+                FROM archived_nodes;
+
+                DROP TABLE metrics;
+                DROP TABLE archived_nodes;
+                DROP TABLE nodes;
+
+                CREATE TABLE nodes (
+                    "commit" TEXT PRIMARY KEY,
+                    "parent" TEXT REFERENCES nodes("commit"),
+                    name TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('committed', 'running', 'completed', 'failed')),
+                    hypothesis TEXT,
+                    analysis TEXT,
+                    worktree TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    verdict TEXT CHECK (
+                        verdict IN (
+                            'promising',
+                            'regression',
+                            'neutral',
+                            'inconclusive',
+                            'invalid',
+                            'unsupported'
+                        )
+                    )
+                );
+
+                CREATE INDEX idx_nodes_parent ON nodes("parent");
+                CREATE INDEX idx_nodes_status ON nodes(status);
+
+                CREATE TABLE metrics (
+                    "commit" TEXT NOT NULL REFERENCES nodes("commit") ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    value REAL NOT NULL,
+                    PRIMARY KEY ("commit", name)
+                );
+
+                CREATE TABLE archived_nodes (
+                    "commit" TEXT PRIMARY KEY REFERENCES nodes("commit") ON DELETE CASCADE,
+                    archived_at TEXT NOT NULL
+                );
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO nodes(
+                    "commit", "parent", name, status, hypothesis, analysis,
+                    worktree, created_at, completed_at, verdict
+                )
+                SELECT
+                    "commit", "parent", name, status, hypothesis, analysis,
+                    worktree, created_at, completed_at, verdict
+                FROM nodes_backup
+                """
+            )
+            connection.executescript(
+                """
+                INSERT INTO metrics("commit", name, value)
+                SELECT "commit", name, value
+                FROM metrics_backup;
+
+                INSERT INTO archived_nodes("commit", archived_at)
+                SELECT "commit", archived_at
+                FROM archived_nodes_backup;
+
+                DROP TABLE nodes_backup;
+                DROP TABLE metrics_backup;
+                DROP TABLE archived_nodes_backup;
+                """
+            )
+        finally:
+            connection.execute("PRAGMA foreign_keys = ON")
 
     def require_initialized(self) -> None:
         if not self.exists():
@@ -329,27 +468,32 @@ class ArcStore:
             for row in rows
         ]
 
-    def list_completed_since(
+    def list_recent_by_status(
         self,
+        statuses: Iterable[Status],
         timestamp: str | None,
         *,
         include_archived: bool = False,
     ) -> list[NodeRecord]:
+        wanted = tuple(statuses)
+        if not wanted:
+            return []
         self.require_initialized()
+        placeholders = ", ".join("?" for _ in wanted)
         query = """
             SELECT
         """
         query += NODE_COLUMNS
         query += NODE_JOIN
-        query += """
-            WHERE nodes.status IN ('completed', 'failed')
+        query += f"""
+            WHERE nodes.status IN ({placeholders})
         """
         if not include_archived:
             query += ' AND archived_nodes."commit" IS NULL'
-        params: tuple[str, ...] = ()
+        params: tuple[str, ...] = wanted
         if timestamp:
             query += " AND nodes.completed_at > ?"
-            params = (timestamp,)
+            params = (*wanted, timestamp)
         query += ' ORDER BY nodes.completed_at, nodes."commit"'
 
         with self.connect() as connection:

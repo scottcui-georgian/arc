@@ -24,8 +24,8 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
         raise ArcError("Archived experiments cannot be promoted.")
     if target.node.status != "completed":
         raise ArcError("Only completed experiments can be promoted.")
-    if target.node.verdict == "unsupported":
-        raise ArcError("Unsupported completed experiments cannot be promoted.")
+    if target.node.verdict != "promising":
+        raise ArcError("Only promising completed experiments can be promoted.")
 
     previous_main_commit = app.main_commit()
     previous_main = (

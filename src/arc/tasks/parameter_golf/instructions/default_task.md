@@ -89,14 +89,16 @@ arc tail <commit> --no-follow
 Record with thorough analysis — what happened, why, and what it means for next steps:
 
 ```bash
-arc result <commit> - --verdict=promising --val_bpb=<value> --peak_vram_mb=<value> <<'EOF'
+arc result <commit> - --verdict=promising --val_bpb=<value> --peak_vram_mb=<value> --submission_bytes=<value> <<'EOF'
 ...few paragraphs of analysis...
 EOF
 ```
 
+If a run completed but the metric is invalid or disqualified, record it with `--verdict=invalid`. Use `--verdict=neutral` for effectively flat results, `--verdict=regression` for clearly worse results, and `--verdict=inconclusive` when the run completed but did not cleanly answer the intended question. For Parameter Golf, include `--submission_bytes=<value>` whenever available; arc will auto-record `artifact_mb` and `runtime_minutes`, and any artifact over `16,000,000` bytes will be forced to `invalid`. If a completed node was misclassified, fix it later with `arc verdict <commit> promising|regression|neutral|inconclusive|invalid`.
+
 In that analysis, reason about the real submission objective, not just the proxy score. At minimum, keep track of final roundtrip `val_bpb`, likely 8xH100 training behavior, likely 8xH100 evaluation behavior, and artifact bytes.
 
-For hard failures such as crashes, OOMs, timeouts, infra problems, or other invalid runs:
+For hard failures such as crashes, OOMs, timeouts, infra problems, or runs that did not complete cleanly:
 
 ```bash
 arc fail <commit> - --peak_vram_mb=<value> <<'EOF'

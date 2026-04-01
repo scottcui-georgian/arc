@@ -15,11 +15,14 @@ def register(parser: argparse.ArgumentParser) -> None:
         "  • committed\n"
         "  ◌ running\n"
         "  ◆ completed + promising\n"
-        "  ○ completed + unsupported\n"
+        "  ○ completed + regression\n"
+        "  ~ completed + neutral\n"
+        "  ? completed + inconclusive\n"
+        "  ! completed + invalid\n"
         "  ✗ hard failure\n"
         "  ◦ archived prefix\n"
         "  (main) current main node\n"
-        "  (best) best completed leaf on the main metric"
+        "  (best) best promising completed leaf on the main metric"
     )
     parser.add_argument(
         "--status",
@@ -61,6 +64,9 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
             archived_only=archived_only,
             depth=args.depth,
             leaves_only=args.leaves,
+            tree_metric_suffix=lambda record, metric_name: app.task.tree_metric_suffix(
+                record, metric_name=metric_name
+            ),
         )
     )
     return 0

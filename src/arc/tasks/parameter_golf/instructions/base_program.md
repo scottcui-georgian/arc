@@ -51,12 +51,13 @@ arc submit <name>
 ### Recording results
 
 ```bash
-arc result <commit> <analysis | -> --verdict=promising|unsupported [--<metric>=<value> ...]
+arc result <commit> <analysis | -> --verdict=promising|regression|neutral|inconclusive|invalid [--<metric>=<value> ...]
+arc verdict <commit> promising|regression|neutral|inconclusive|invalid
 arc fail <commit> <analysis | -> [--<metric>=<value> ...]
 arc promote <commit>
 ```
 
-`arc result` records a valid finished run plus a research verdict: `promising` or `unsupported`. `arc fail` is only for hard execution failures such as crashes, OOMs, timeouts, infra failures, or otherwise invalid runs. No extra git commit is required just to record results.
+`arc result` records a finished run plus a research verdict: `promising`, `regression`, `neutral`, `inconclusive`, or `invalid`. Use `regression` when the result clearly got worse, `neutral` when it is effectively flat, `inconclusive` when the run completed but did not cleanly answer the intended question, and `invalid` when the metric is unusable or the run is disqualified for evaluation reasons. For Parameter Golf, pass `submission_bytes` whenever you have it; arc will automatically derive `artifact_mb`, automatically derive `runtime_minutes` from node creation/completion time, and force `invalid` if `submission_bytes > 16_000_000`. `arc verdict` lets you fix or update that verdict later from the CLI. `arc fail` is only for hard execution failures such as crashes, OOMs, timeouts, or infra failures. No extra git commit is required just to record results.
 
 ## Execution
 
@@ -86,7 +87,7 @@ One arc node equals one committed code snapshot.
 
 1. **Hypothesis first.** Write your reasoning to the board with `arc hyp` before implementing anything.
 2. **Submit snapshots the worktree.** `arc submit <name>` creates the git commit that defines the node, then launches the tracked run and creates the worktree-local `run.log`.
-3. **Record after completion.** Use `arc status` to notice finished remote runs, `arc tail <commit>` to inspect the log, then call `arc result --verdict=...` for valid runs or `arc fail` for hard failures.
+3. **Record after completion.** Use `arc status` to notice finished remote runs, `arc tail <commit>` to inspect the log, then call `arc result --verdict=...` for completed runs or `arc fail` for hard failures. If you later realize a completed run was misclassified, fix it with `arc verdict`.
 4. **Archive stale leaves when needed.** Use `arc archive <commit>` to hide dead-end leaf nodes from the default tree view without deleting history.
 5. **Bug fix = new node.** If you fix a bug and rerun, that is a new child commit. Record the failure first with `arc fail`, then continue from the failed node or its child.
 

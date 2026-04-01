@@ -15,8 +15,8 @@ def register(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--verdict",
         required=True,
-        choices=("promising", "unsupported"),
-        help="Research verdict for a valid completed run.",
+        choices=("promising", "regression", "neutral", "inconclusive", "invalid"),
+        help="Research verdict for a completed run.",
     )
 
 
@@ -36,20 +36,28 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
         raise ArcError("At least one metric is required for `arc result`.")
 
     completed_at = utc_now_iso()
+    verdict, metrics, notes = app.task.process_result_metrics(
+        record.node,
+        verdict=args.verdict,
+        metrics=metrics,
+        completed_at=completed_at,
+    )
     app.store.upsert_metrics(record.node.commit, metrics)
     app.store.update_node(
         record.node.commit,
         status="completed",
         analysis=analysis,
         completed_at=completed_at,
-        verdict=args.verdict,
+        verdict=verdict,
     )
 
     print(f"Recorded result for {record.node.commit} ({record.node.name})")
     print(f"Status: {record.node.status} → completed")
-    print(f"Verdict: {args.verdict}")
+    print(f"Verdict: {verdict}")
+    for note in notes:
+        print(f"Note: {note}")
     for name, value in sorted(metrics.items()):
-        print(f"{name}: {value:g}")
+        print(f"{name}: {app.task.format_metric(name, value)}")
     return 0
 
 

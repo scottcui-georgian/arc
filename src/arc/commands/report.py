@@ -19,7 +19,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
     path = app.store.path_to_root(args.commit)
     if not path:
         raise ArcError(f"Unknown commit: {args.commit}")
-    print(render_report(path, metric_name=app.main_metric()))
+    print(render_report(path, metric_name=app.main_metric(), format_metric_value=app.task.format_metric))
     return 0
 
 

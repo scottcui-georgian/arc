@@ -6,7 +6,14 @@ from typing import Literal
 
 Status = Literal["committed", "running", "completed", "failed"]
 Direction = Literal["min", "max"]
-Verdict = Literal["promising", "unsupported"]
+Verdict = Literal[
+    "promising",
+    "regression",
+    "neutral",
+    "inconclusive",
+    "invalid",
+    "unsupported",
+]
 RemoteRunState = Literal["missing", "running", "finished", "failed"]
 
 

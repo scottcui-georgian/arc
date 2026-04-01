@@ -49,14 +49,18 @@ Useful follow-up commands:
 ```bash
 arc status
 arc tail <commit>
-arc result <commit> --verdict=promising|unsupported ...
+arc result <commit> --verdict=promising|regression|neutral|inconclusive|invalid ...
+arc verdict <commit> promising|regression|neutral|inconclusive|invalid
 arc fail <commit> ...
 arc archive <commit>
 ```
 
 `arc status` inspects each running node's `run.log` so it can tell you
-when a remote run already finished and now needs `arc result` or
-`arc fail`. Use `arc fail` only for hard execution failures such as
-crashes, OOMs, timeouts, infra problems, or otherwise invalid runs.
+when a remote run already finished, failed remotely, or lost its log.
+Use `arc fail` only for hard execution failures such as crashes, OOMs,
+or infra problems. Use `arc result --verdict=invalid` for completed
+runs whose reported metric is unusable or disqualified, `neutral` for
+flat results, `regression` for worse results, and `inconclusive` when a
+run completed but did not cleanly answer the intended question.
 `arc archive <commit>` hides stale leaf nodes from the
 default tree view without deleting them.

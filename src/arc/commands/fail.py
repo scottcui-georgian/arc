@@ -27,6 +27,12 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
     analysis = read_text_argument(args.analysis)
     metrics = parse_metric_flags(extras)
     completed_at = utc_now_iso()
+    _, metrics, _ = app.task.process_result_metrics(
+        record.node,
+        verdict="invalid",
+        metrics=metrics,
+        completed_at=completed_at,
+    )
     app.store.upsert_metrics(record.node.commit, metrics)
     app.store.update_node(
         record.node.commit,

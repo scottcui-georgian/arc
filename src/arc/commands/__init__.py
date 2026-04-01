@@ -11,6 +11,7 @@ from arc.commands.status import COMMAND as STATUS
 from arc.commands.submit import COMMAND as SUBMIT
 from arc.commands.tail import COMMAND as TAIL
 from arc.commands.tree import COMMAND as TREE
+from arc.commands.verdict import COMMAND as VERDICT
 
 BUILTIN_COMMANDS = [
     INIT,
@@ -23,6 +24,7 @@ BUILTIN_COMMANDS = [
     TAIL,
     STATUS,
     RESULT,
+    VERDICT,
     FAIL,
     ARCHIVE,
     PROMOTE,

@@ -26,6 +26,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
     running: list[RemoteRunRecord] = []
     finished_remote: list[RemoteRunRecord] = []
     failed_remote: list[RemoteRunRecord] = []
+    missing_remote: list[RemoteRunRecord] = []
     for record in running_records:
         log_path = app.node_log_path(record.node)
         summary = summarize_run_log(log_path)
@@ -39,16 +40,21 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
             finished_remote.append(item)
         elif summary.state == "failed":
             failed_remote.append(item)
+        elif summary.state == "missing":
+            missing_remote.append(item)
         else:
             running.append(item)
 
-    completed = app.store.list_completed_since(last_check)
+    completed = app.store.list_recent_by_status(["completed"], last_check)
+    failed = app.store.list_recent_by_status(["failed"], last_check)
     print(
         render_status(
             running,
             finished_remote,
             failed_remote,
+            missing_remote,
             completed,
+            failed,
             metric_name=app.main_metric(),
         )
     )
