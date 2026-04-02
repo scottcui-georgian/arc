@@ -19,12 +19,21 @@ from typing import Any
 import modal
 
 APP_NAME = "autoresearch-parameter-golf"
-GPU_TYPE = "A100-40GB"
+DEFAULT_GPU_TYPE = "A100-40GB"
+GPU_TYPE = os.environ.get("ARC_PARAMETER_GOLF_GPU", DEFAULT_GPU_TYPE).strip() or DEFAULT_GPU_TYPE
 REMOTE_CPU = 4
 REMOTE_MEMORY_MIB = 8 * 1024
 REMOTE_TASK_DIR = "/root/task"
 VOLUME_ROOT = "/cache-home"
 VOLUME_RUNS_ROOT = f"{VOLUME_ROOT}/parameter-golf-runs"
+
+
+def _train_entrypoint_override_from_env() -> str | None:
+    value = os.environ.get("ARC_PARAMETER_GOLF_TRAIN_ENTRYPOINT")
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
 
 def _task_root_from_env() -> Path:
     value = os.environ.get("ARC_PARAMETER_GOLF_REPO_ROOT")
@@ -43,14 +52,26 @@ def _build_local_image() -> tuple[modal.Image, str]:
     if not pyproject_path.is_file():
         raise RuntimeError(f"Parameter Golf task is missing {pyproject_path}.")
 
-    train_file = _find_first(
+    default_train_file = _find_first(
         [
             task_root / "train_gpt.py",
             task_root / "workspace" / "train_gpt.py",
         ]
     )
-    if train_file is None:
+    if default_train_file is None:
         raise RuntimeError("Parameter Golf task is missing `train_gpt.py`.")
+    train_entrypoint = _train_entrypoint_override_from_env()
+    if train_entrypoint is None:
+        train_file = default_train_file
+        train_relative = "train_gpt.py"
+    else:
+        train_file = (task_root / train_entrypoint).resolve()
+        try:
+            train_relative = train_file.relative_to(task_root).as_posix()
+        except ValueError as exc:
+            raise RuntimeError("ARC_PARAMETER_GOLF_TRAIN_ENTRYPOINT must stay inside the repo.") from exc
+        if not train_file.is_file():
+            raise RuntimeError(f"Parameter Golf task is missing `{train_relative}`.")
 
     prepare_file = _find_first(
         [
@@ -74,7 +95,7 @@ def _build_local_image() -> tuple[modal.Image, str]:
     )
     image = image.add_local_file(
         train_file,
-        remote_path=f"{REMOTE_TASK_DIR}/train_gpt.py",
+        remote_path=f"{REMOTE_TASK_DIR}/{train_relative}",
     )
 
     prepare_entrypoint = "prepare.py"
@@ -100,7 +121,8 @@ def _runtime_env_from_client() -> dict[str, str]:
     run_id = os.environ.get("ARC_PARAMETER_GOLF_RUN_ID")
     if run_id:
         result["ARC_PARAMETER_GOLF_RUN_ID"] = run_id
-    result["GRAD_ACCUM_STEPS"] = "4"
+    if GPU_TYPE == "A100-40GB" or GPU_TYPE == "H100":
+        result["GRAD_ACCUM_STEPS"] = "4"
     return result
 
 
@@ -263,7 +285,7 @@ def main(action: str) -> None:
 
     extra_args = _extra_args_from_env()
     quiet_mode = _quiet_mode_from_env()
-    entrypoint_file = "train_gpt.py"
+    entrypoint_file = _train_entrypoint_override_from_env() or "train_gpt.py"
     remote_function = gpu_remote
     if action == "prepare":
         if prepare_entrypoint is None:

@@ -118,6 +118,14 @@ def _register_run_parser(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _register_train_parser(parser: argparse.ArgumentParser) -> None:
+    _register_run_parser(parser)
+    parser.add_argument(
+        "--gpu",
+        help="Modal GPU type override. Defaults to ARC_PARAMETER_GOLF_GPU or A100-40GB.",
+    )
+
+
 def _hide_subparser_from_help(
     subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
     name: str,
@@ -132,14 +140,16 @@ def _hide_subparser_from_help(
 
 def _run_action(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
     from arc.errors import ArcError
+    from arc.paths import discover_worktree_root
     from arc.tasks.parameter_golf.runtime import ParameterGolfModalRunner
 
     action = getattr(args, "_parameter_golf_action", None)
     if action not in {"train", "prepare"}:
         raise ArcError("Parameter Golf action is not set.")
     quiet = args.quiet if args.quiet is not None else (action != "train")
-    runner = ParameterGolfModalRunner(app.paths.repo_root)
-    return runner.run(action, list(extras), quiet=quiet)
+    runner = ParameterGolfModalRunner(discover_worktree_root())
+    gpu = getattr(args, "gpu", None)
+    return runner.run(action, list(extras), quiet=quiet, gpu=gpu)
 
 class ParameterGolfTaskModule(TaskModule):
     def __init__(self) -> None:
@@ -165,7 +175,7 @@ class ParameterGolfTaskModule(TaskModule):
             "train",
             help="Run the task train entrypoint on Modal GPU.",
         )
-        _register_run_parser(train_parser)
+        _register_train_parser(train_parser)
         train_parser.set_defaults(
             _arc_command=run_command,
             _parameter_golf_action="train",

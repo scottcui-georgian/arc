@@ -105,12 +105,25 @@ def normalize_action_args(args: list[str]) -> list[str]:
     return args
 
 
+def resolve_train_entrypoint(repo_root: Path, entrypoint: str) -> tuple[Path, str]:
+    path = (repo_root / entrypoint).resolve()
+    try:
+        relative = path.relative_to(repo_root)
+    except ValueError as exc:
+        raise ArcError("Train entrypoint must be inside the repository.") from exc
+    if path.suffix != ".py":
+        raise ArcError("Train entrypoint must be a Python file.")
+    if not path.is_file():
+        raise ArcError(f"Train entrypoint does not exist: {entrypoint}")
+    return path, relative.as_posix()
+
+
 class ParameterGolfModalRunner:
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = repo_root.resolve()
 
-    def run(self, action: str, action_args: list[str], *, quiet: bool) -> int:
-        cmd, env = self._build_invocation(action, action_args, quiet=quiet)
+    def run(self, action: str, action_args: list[str], *, quiet: bool, gpu: str | None = None) -> int:
+        cmd, env = self._build_invocation(action, action_args, quiet=quiet, gpu=gpu)
         proc = subprocess.run(cmd, cwd=str(self.repo_root), env=env, check=False)
         return proc.returncode
 
@@ -153,6 +166,7 @@ class ParameterGolfModalRunner:
         action_args: list[str],
         *,
         quiet: bool,
+        gpu: str | None = None,
     ) -> tuple[list[str], dict[str, str]]:
         valid_actions = {"prepare", "train"}
         if action not in valid_actions:
@@ -163,10 +177,19 @@ class ParameterGolfModalRunner:
         modal_path = require_cmd("modal")
         env = os.environ.copy()
         load_dotenv_into(env, self.repo_root / ".env")
+        normalized_args = normalize_action_args(action_args)
+        if action == "train" and normalized_args:
+            first_arg = normalized_args[0]
+            if first_arg.endswith(".py"):
+                _, relative_entrypoint = resolve_train_entrypoint(self.repo_root, first_arg)
+                env["ARC_PARAMETER_GOLF_TRAIN_ENTRYPOINT"] = relative_entrypoint
+                normalized_args = normalized_args[1:]
         env["ARC_PARAMETER_GOLF_REPO_ROOT"] = str(self.repo_root)
         env["ARC_PARAMETER_GOLF_RUN_ID"] = self.repo_root.name
-        env["ARC_PARAMETER_GOLF_ACTION_ARGS"] = json.dumps(normalize_action_args(action_args))
+        env["ARC_PARAMETER_GOLF_ACTION_ARGS"] = json.dumps(normalized_args)
         env["ARC_PARAMETER_GOLF_QUIET"] = "1" if quiet else "0"
+        if gpu:
+            env["ARC_PARAMETER_GOLF_GPU"] = gpu
 
         modal_app = Path(__file__).with_name("modal_app.py")
         cmd = [modal_path, "run"]

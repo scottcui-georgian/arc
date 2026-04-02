@@ -44,6 +44,26 @@ def discover_repo_root(start: Path | None = None) -> Path:
     return common_dir.parent
 
 
+def discover_worktree_root(start: Path | None = None) -> Path:
+    current = (start or Path.cwd()).resolve()
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(current),
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ArcError("Not inside a git repository.")
+    return Path(result.stdout.strip())
+
+
 def build_paths(start: Path | None = None) -> ArcPaths:
     repo_root = discover_repo_root(start)
     arc_dir = repo_root / ".arc"
