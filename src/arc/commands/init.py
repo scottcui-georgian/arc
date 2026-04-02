@@ -34,7 +34,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
         raise ArcError("Arc is already initialized in this repository.")
 
     app.ensure_directories()
-    app.store.initialize(app.paths.repo_root)
+    app.store.initialize()
 
     root_commit = current_head(app.paths.repo_root)
     created_at = utc_now_iso()

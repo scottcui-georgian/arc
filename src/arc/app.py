@@ -23,7 +23,7 @@ class ArcApp:
         paths = build_paths(start)
         store = ArcStore(paths.db_path)
         if store.exists():
-            store.initialize(paths.repo_root)
+            store.initialize()
         task_name = os.environ.get("ARC_TASK")
         if task_name is None and store.exists():
             task_name = store.get_meta("task")
