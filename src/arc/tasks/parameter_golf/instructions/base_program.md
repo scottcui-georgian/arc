@@ -75,7 +75,7 @@ arc fail <commit> <analysis | -> [--<metric>=<value> ...]
 arc promote <commit>
 ```
 
-`arc result` records a finished run plus a research verdict: `promising`, `regression`, `neutral`, `inconclusive`, or `invalid`. Use `regression` when the result clearly got worse, `neutral` when it is effectively flat, `inconclusive` when the run completed but did not cleanly answer the intended question, and `invalid` when the metric is unusable or the run is disqualified for evaluation reasons. For Parameter Golf, `arc result` and `arc fail` should derive any available metrics from `run.log` automatically, including `val_bpb`, `submission_bytes`, `peak_vram_mb`, `eval_time_ms`, and runtime when timestamped log lines are available. If you pass explicit `--metric=value` flags, those override the values inferred from the log. Arc will automatically derive `artifact_mb` from `submission_bytes` and force `invalid` if `submission_bytes > 16_000_000`. `arc verdict` lets you fix or update that verdict later from the CLI. `arc fail` is only for hard execution failures such as crashes, OOMs, timeouts, or infra failures. No extra git commit is required just to record results.
+`arc result` records a finished run plus a research verdict: `promising`, `regression`, `neutral`, `inconclusive`, or `invalid`. Use `regression` when the result clearly got worse, `neutral` when it is effectively flat, `inconclusive` when the run completed but did not cleanly answer the intended question, and `invalid` when the metric is unusable or the run is disqualified for evaluation reasons. For Parameter Golf, Arc does not parse metrics from `run.log` for you. Inspect `run.log` yourself, then pass every metric you want stored as explicit `--metric=value` flags, including `val_bpb`, `submission_bytes`, `peak_vram_mb`, `eval_time_ms`, and `runtime_minutes` when available. Arc will still derive `artifact_mb` from `submission_bytes` and force `invalid` if `submission_bytes > 16_000_000`. `arc verdict` lets you fix or update that verdict later from the CLI. `arc fail` is only for hard execution failures such as crashes, OOMs, timeouts, or infra failures. No extra git commit is required just to record results.
 
 ## Execution
 
@@ -125,6 +125,8 @@ Understand the full picture: what directions exist, which are improving, what is
 ```bash
 arc report <leaf-commit>
 ```
+
+Note that this is quite long for long paths. Prefer `arc show <commit>` for viewing single experiments.
 
 ### 2. Think
 
@@ -184,7 +186,7 @@ Record thorough analysis: what happened, why, and what it means for next steps.
 arc result <commit> - --verdict=promising --val_bpb=<value> --peak_vram_mb=<value> --submission_bytes=<value>
 ```
 
-If a run completed but the metric is invalid or disqualified, record it with `--verdict=invalid`. Use `--verdict=neutral` for effectively flat results, `--verdict=regression` for clearly worse results, and `--verdict=inconclusive` when the run completed but did not cleanly answer the intended question. Let `arc result` derive metrics from `run.log` by default, and pass explicit flags only when you need to override or supplement what the log provides.
+If a run completed but the metric is invalid or disqualified, record it with `--verdict=invalid`. Use `--verdict=neutral` for effectively flat results, `--verdict=regression` for clearly worse results, and `--verdict=inconclusive` when the run completed but did not cleanly answer the intended question. Always inspect `run.log` and pass every metric you want recorded explicitly to `arc result`.
 
 For hard failures such as crashes, OOMs, timeouts, infra problems, or runs that did not complete cleanly:
 
@@ -192,7 +194,7 @@ For hard failures such as crashes, OOMs, timeouts, infra problems, or runs that 
 arc fail <commit> - --peak_vram_mb=<value>
 ```
 
-Let `arc fail` derive any available metrics from `run.log` by default, and pass explicit flags only when you need to override or supplement what the log provides.
+Inspect `run.log` and pass any useful metrics explicitly to `arc fail`. Arc will not infer them for you.
 
 If a crash was an obvious bug, fix it in the same worktree, commit as a new node that is a child of the failed one, and rerun. A small number of retries per idea is fine.
 
@@ -210,7 +212,7 @@ Then go back to step 1.
 ## Gotchas
 
 1. Optimize for direction, not proxy score. The A100-40GB proxy is for ranking ideas quickly. Don't inflate scores by increasing batch size, iterations, or compute — those aren't ML insights and won't differentiate on 8xH100. Keep proxy settings (500 iters, 262K batch) fixed.
-2. Work asynchronously. Don't sleep-wait for a batch of runs to finish. Check what's done, record it, brainstorm, launch new experiments. Every minute sleeping is a minute not iterating.
+2. Work asynchronously. Don't sleep-wait for runs to finish. Check what's done, record it, brainstorm, launch new experiments. Every minute sleeping is a minute not iterating. Submit the experiment right after the edit + verification is done. Don't need to batch experiments because edits take time.
 3. One change per experiment is sacred, but knowing when to combine is the real skill. The tree structure made single-variable experiments easy. The harder question was: after 3 independent experiments each gain +0.01, do you combine all three or test pairs? Stacking greedily (always build on best) could work but may miss interaction effects.
 4. The proxy reliably signals structural/architectural changes (new ops, better information routing) that improve the model's capacity from step 1, but fails for training dynamics techniques — anything that intentionally slows early learning for later payoff (regularizers like WD, LN scale, OrthoInit's dampening), anything that needs accumulated history to work (high Muon momentum, EMA), and anything zero-initialized that requires many steps to activate (SmearGate, BigramHash) — all of these show proxy regressions that are artifacts of the 500-step budget, not real signals.
 5. Depth over breadth. A bad first result often just needs a follow-up such as an LR adjustment or init change. Give directions 2 to 3 iterations before giving up.

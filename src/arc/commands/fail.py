@@ -15,8 +15,8 @@ def register(parser: argparse.ArgumentParser) -> None:
     parser.epilog = (
         "Metric flags:\n"
         "  Pass metrics as --name=value, for example --peak_vram_mb=6144.\n"
-        "  Task-specific metrics may be inferred automatically from run.log.\n"
-        "  Explicit flags override inferred values when both are present."
+        "  Arc does not infer metrics from run.log.\n"
+        "  Pass every metric you want recorded explicitly."
     )
     parser.add_argument("commit", help="Experiment commit hash or prefix.")
     parser.add_argument("analysis", help="Failure analysis, or `-` to read it from stdin.")
@@ -34,11 +34,6 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
 
     analysis = read_text_argument(args.analysis)
     metrics = parse_metric_flags(extras)
-    inferred_metrics, inferred_notes = app.task.derive_result_metrics(
-        record.node,
-        app.node_log_path(record.node),
-    )
-    metrics = {**inferred_metrics, **metrics}
     completed_at = utc_now_iso()
     _, metrics, notes = app.task.process_result_metrics(
         record.node,
@@ -46,7 +41,6 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
         metrics=metrics,
         completed_at=completed_at,
     )
-    notes = [*inferred_notes, *notes]
     app.store.upsert_metrics(record.node.commit, metrics)
     app.store.update_node(
         record.node.commit,
@@ -67,7 +61,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
 
 COMMAND = CommandSpec(
     name="fail",
-    help="Record a hard failure; infer metrics from run.log when possible.",
+    help="Record a hard failure with explicit metric flags.",
     register=register,
     run=run,
 )

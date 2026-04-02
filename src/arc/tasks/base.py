@@ -35,14 +35,6 @@ class TaskModule:
         del node, completed_at
         return verdict, dict(metrics), []
 
-    def derive_result_metrics(
-        self,
-        node: Node,
-        log_path: Path,
-    ) -> tuple[dict[str, float], list[str]]:
-        del node, log_path
-        return {}, []
-
     def tree_metric_suffix(self, record: NodeRecord, *, metric_name: str | None) -> str:
         if metric_name and metric_name in record.metrics:
             return f" ({self.format_metric(metric_name, record.metrics[metric_name])})"

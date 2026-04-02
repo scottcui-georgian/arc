@@ -128,30 +128,57 @@ def render_tree(
     roots = [record for record in records if record.node.parent is None]
     lines: list[str] = []
 
+    def visible_children(record: NodeRecord) -> list[NodeRecord]:
+        return [
+            child
+            for child in children.get(record.node.commit, [])
+            if child.node.commit in selected
+        ]
+
     def visit(record: NodeRecord, prefix: str, is_last: bool, level: int) -> None:
         if record.node.commit not in selected:
             return
-        branch = ""
-        if level > 0:
-            branch = "└── " if is_last else "├── "
-        lines.append(
-            f"{prefix}{branch}{_tree_label(record, metric_name, best_leaf, main_commit, tree_metric_suffix)}"
+
+        current = record
+        current_prefix = prefix
+        current_is_last = is_last
+        current_level = level
+        chain_prefix: str | None = None
+
+        while True:
+            branch = ""
+            if current_level > 0:
+                branch = "↳ " if chain_prefix is not None else ("└── " if current_is_last else "├── ")
+            line_prefix = current_prefix if chain_prefix is None else chain_prefix
+            lines.append(
+                f"{line_prefix}{branch}{_tree_label(current, metric_name, best_leaf, main_commit, tree_metric_suffix)}"
+            )
+
+            if depth is not None and current_level >= depth:
+                return
+
+            current_children = visible_children(current)
+            if len(current_children) != 1:
+                break
+
+            current = current_children[0]
+            current_level += 1
+            current_is_last = True
+            if chain_prefix is None:
+                chain_prefix = "" if level == 0 else prefix + ("    " if is_last else "│   ")
+
+        final_children = visible_children(current)
+        next_prefix = (
+            chain_prefix + "    "
+            if chain_prefix is not None
+            else ("" if current_level == 0 else current_prefix + ("    " if current_is_last else "│   "))
         )
-
-        if depth is not None and level >= depth:
-            return
-
-        visible_children = [
-            child for child in children.get(record.node.commit, [])
-            if child.node.commit in selected
-        ]
-        next_prefix = "" if level == 0 else prefix + ("    " if is_last else "│   ")
-        for index, child in enumerate(visible_children):
+        for index, child in enumerate(final_children):
             visit(
                 child,
                 next_prefix,
-                index == len(visible_children) - 1,
-                level + 1,
+                index == len(final_children) - 1,
+                current_level + 1,
             )
 
     for index, root in enumerate(roots):
@@ -183,7 +210,8 @@ def _tree_label(
         labels.append("best")
     label_prefix = f" ({', '.join(labels)})" if labels else ""
 
-    return f"{prefix}{label_prefix} {format_commit(node.commit)} {node.name}{metric}".rstrip()
+    metric_prefix = f"{metric.strip()} " if metric else ""
+    return f"{prefix}{label_prefix} {format_commit(node.commit)} {metric_prefix}{node.name}".rstrip()
 
 
 def render_show(
