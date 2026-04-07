@@ -13,8 +13,9 @@ import os
 import selectors
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import modal
 
@@ -22,7 +23,7 @@ APP_NAME = "autoresearch-parameter-golf"
 DEFAULT_GPU_TYPE = "A100-40GB"
 DEFAULT_REMOTE_CPU = 8.0
 DEFAULT_REMOTE_MEMORY_GB = 8.0
-GPU_TYPE = os.environ.get("ARC_PARAMETER_GOLF_GPU", DEFAULT_GPU_TYPE).strip() or DEFAULT_GPU_TYPE
+MODAL_CONFIG_ENV_VAR = "ARC_PARAMETER_GOLF_MODAL_CONFIG"
 FLASH_ATTENTION_3_WHEEL_INDEX = (
     "https://windreamer.github.io/flash-attention3-wheels/cu128_torch291"
 )
@@ -32,24 +33,128 @@ VOLUME_ROOT = "/cache-home"
 VOLUME_RUNS_ROOT = f"{VOLUME_ROOT}/parameter-golf-runs"
 
 
-def _env_positive_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
+@dataclass(frozen=True)
+class ModalLaunchConfig:
+    mode: Literal["run", "submit"]
+    action: Literal["prepare", "train"]
+    quiet: bool
+    repo_root: Path
+    gpu_type: str
+    cpu: float
+    memory_gb: float
+    train_entrypoint: str | None
+    extra_args: list[str]
+    run_id: str
+    use_flash3: bool
+    forwarded_env: dict[str, str]
+
+
+def _payload_positive_float(payload: dict[str, Any], name: str, default: float) -> float:
+    raw = payload.get(name)
     if raw is None:
         return default
-    value = raw.strip()
-    if not value:
-        return default
+    if isinstance(raw, bool):
+        raise RuntimeError(f"{name} must be a positive number.")
     try:
-        parsed = float(value)
-    except ValueError as exc:
+        parsed = float(raw)
+    except (TypeError, ValueError) as exc:
         raise RuntimeError(f"{name} must be a positive number.") from exc
     if parsed <= 0:
         raise RuntimeError(f"{name} must be greater than 0.")
     return parsed
 
 
-REMOTE_CPU = _env_positive_float("ARC_PARAMETER_GOLF_CPU", DEFAULT_REMOTE_CPU)
-REMOTE_MEMORY_GB = _env_positive_float("ARC_PARAMETER_GOLF_MEMORY_GB", DEFAULT_REMOTE_MEMORY_GB)
+def _payload_string(payload: dict[str, Any], name: str) -> str:
+    value = payload.get(name)
+    if not isinstance(value, str):
+        raise RuntimeError(f"{name} must be a string.")
+    text = value.strip()
+    if not text:
+        raise RuntimeError(f"{name} must not be empty.")
+    return text
+
+
+def _payload_optional_string(payload: dict[str, Any], name: str) -> str | None:
+    value = payload.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RuntimeError(f"{name} must be a string when provided.")
+    text = value.strip()
+    return text or None
+
+
+def _payload_bool(payload: dict[str, Any], name: str) -> bool:
+    value = payload.get(name)
+    if not isinstance(value, bool):
+        raise RuntimeError(f"{name} must be a boolean.")
+    return value
+
+
+def _payload_choice(
+    payload: dict[str, Any],
+    name: str,
+    valid_values: set[str],
+) -> str:
+    value = _payload_string(payload, name)
+    if value not in valid_values:
+        valid = ", ".join(sorted(valid_values))
+        raise RuntimeError(f"{name} must be one of: {valid}.")
+    return value
+
+
+def _payload_string_list(payload: dict[str, Any], name: str) -> list[str]:
+    value = payload.get(name)
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise RuntimeError(f"{name} must be a JSON array of strings.")
+    return value
+
+
+def _payload_env_dict(payload: dict[str, Any], name: str) -> dict[str, str]:
+    value = payload.get(name)
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{name} must be a JSON object of string values.")
+    if not all(isinstance(key, str) and isinstance(item, str) for key, item in value.items()):
+        raise RuntimeError(f"{name} must contain only string keys and string values.")
+    return dict(value)
+
+
+def _load_modal_config_from_env() -> ModalLaunchConfig:
+    raw = os.environ.get(MODAL_CONFIG_ENV_VAR)
+    if not raw:
+        raise RuntimeError(f"{MODAL_CONFIG_ENV_VAR} is not set.")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid {MODAL_CONFIG_ENV_VAR} payload.") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{MODAL_CONFIG_ENV_VAR} must decode to a JSON object.")
+
+    mode = _payload_choice(payload, "mode", {"run", "submit"})
+    action = _payload_choice(payload, "action", {"prepare", "train"})
+    if mode == "submit" and action != "train":
+        raise RuntimeError("Submit mode only supports the train action.")
+
+    return ModalLaunchConfig(
+        mode=mode,
+        action=action,
+        quiet=_payload_bool(payload, "quiet"),
+        repo_root=Path(_payload_string(payload, "repo_root")).resolve(),
+        gpu_type=_payload_string(payload, "gpu_type"),
+        cpu=_payload_positive_float(payload, "cpu", DEFAULT_REMOTE_CPU),
+        memory_gb=_payload_positive_float(payload, "memory_gb", DEFAULT_REMOTE_MEMORY_GB),
+        train_entrypoint=_payload_optional_string(payload, "train_entrypoint"),
+        extra_args=_payload_string_list(payload, "extra_args"),
+        run_id=_payload_string(payload, "run_id"),
+        use_flash3=_payload_bool(payload, "use_flash3"),
+        forwarded_env=_payload_env_dict(payload, "forwarded_env"),
+    )
+
+
+CONFIG = _load_modal_config_from_env()
+GPU_TYPE = CONFIG.gpu_type
+REMOTE_CPU = CONFIG.cpu
+REMOTE_MEMORY_GB = CONFIG.memory_gb
 REMOTE_MEMORY_MIB = int(round(REMOTE_MEMORY_GB * 1024))
 
 
@@ -77,31 +182,8 @@ def _image_build_gpu_type(gpu_type: str) -> str:
     return gpu_type[: -(len(suffix) + 1)]
 
 
-def _train_entrypoint_override_from_env() -> str | None:
-    value = os.environ.get("ARC_PARAMETER_GOLF_TRAIN_ENTRYPOINT")
-    if value is None:
-        return None
-    value = value.strip()
-    return value or None
-
-
-def _task_root_from_env() -> Path:
-    value = os.environ.get("ARC_PARAMETER_GOLF_REPO_ROOT")
-    if not value:
-        raise RuntimeError("ARC_PARAMETER_GOLF_REPO_ROOT is not set.")
-    return Path(value).resolve()
-
-
 def _find_first(paths: list[Path]) -> Path | None:
     return next((path for path in paths if path.is_file()), None)
-
-
-def _should_use_flash3(gpu_type: str | None) -> bool:
-    return bool(gpu_type) and "H100" in gpu_type
-
-
-def _is_h100_gpu() -> bool:
-    return "H100" in GPU_TYPE
 
 
 def _install_h100_deps(image: modal.Image) -> modal.Image:
@@ -119,7 +201,7 @@ def _install_h100_deps(image: modal.Image) -> modal.Image:
 
 
 def _build_local_image() -> tuple[modal.Image, str]:
-    task_root = _task_root_from_env()
+    task_root = CONFIG.repo_root
     pyproject_path = task_root / "pyproject.toml"
     if not pyproject_path.is_file():
         raise RuntimeError(f"Parameter Golf task is missing {pyproject_path}.")
@@ -132,7 +214,7 @@ def _build_local_image() -> tuple[modal.Image, str]:
     )
     if default_train_file is None:
         raise RuntimeError("Parameter Golf task is missing `train_gpt.py`.")
-    train_entrypoint = _train_entrypoint_override_from_env()
+    train_entrypoint = CONFIG.train_entrypoint
     if train_entrypoint is None:
         train_file = default_train_file
         train_relative = "train_gpt.py"
@@ -161,7 +243,7 @@ def _build_local_image() -> tuple[modal.Image, str]:
         uv_project_dir=str(task_root),
         gpu=_image_build_gpu_type(GPU_TYPE),
     )
-    if _is_h100_gpu():
+    if CONFIG.use_flash3:
         image = _install_h100_deps(image)
     else:
         image = image.uv_pip_install("zstandard")
@@ -188,35 +270,21 @@ def _build_local_image() -> tuple[modal.Image, str]:
     return image, prepare_entrypoint
 
 
-def _runtime_env_from_client() -> dict[str, str]:
-    result: dict[str, str] = {
-        "ARC_PARAMETER_GOLF_GPU": GPU_TYPE,
-    }
-    run_id = os.environ.get("ARC_PARAMETER_GOLF_RUN_ID")
-    if run_id:
-        result["ARC_PARAMETER_GOLF_RUN_ID"] = run_id
-    if _should_use_flash3(GPU_TYPE):
+def _remote_env_from_config() -> dict[str, str]:
+    result = dict(CONFIG.forwarded_env)
+    result[MODAL_CONFIG_ENV_VAR] = os.environ[MODAL_CONFIG_ENV_VAR]
+    result.update(
+        {
+            "ARC_PARAMETER_GOLF_GPU": GPU_TYPE,
+            "ARC_PARAMETER_GOLF_RUN_ID": CONFIG.run_id,
+            "TORCHINDUCTOR_FX_GRAPH_CACHE": "1",
+            "TORCHINDUCTOR_CACHE_DIR": f"{VOLUME_ROOT}/torch_cache",
+        }
+    )
+    if CONFIG.use_flash3:
         result["USE_FLASH3"] = "1"
-    if _requested_gpu_count(GPU_TYPE) == 1:
-        result["GRAD_ACCUM_STEPS"] = "4"
-    result["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
-    result["TORCHINDUCTOR_CACHE_DIR"] = f"{VOLUME_ROOT}/torch_cache"
     return result
 
-
-def _extra_args_from_env() -> list[str]:
-    raw = os.environ.get("ARC_PARAMETER_GOLF_ACTION_ARGS", "[]")
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Invalid ARC_PARAMETER_GOLF_ACTION_ARGS payload.") from exc
-    if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
-        raise RuntimeError("ARC_PARAMETER_GOLF_ACTION_ARGS must be a JSON array of strings.")
-    return payload
-
-
-def _quiet_mode_from_env() -> bool:
-    return os.environ.get("ARC_PARAMETER_GOLF_QUIET", "1") != "0"
 
 app = modal.App(APP_NAME)
 cache_volume = modal.Volume.from_name(f"{APP_NAME}-cache", create_if_missing=True)
@@ -243,6 +311,7 @@ def _python_command(args: list[str], *, distributed: bool) -> list[str]:
 
 def _run_python(args: list[str], *, distributed: bool = False) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    env.pop(MODAL_CONFIG_ENV_VAR, None)
     env["HOME"] = VOLUME_ROOT
     env["PYTHONUNBUFFERED"] = "1"
     if "RUN_ID" not in env:
@@ -337,7 +406,7 @@ def _validate_gpu() -> dict[str, Any]:
     memory=REMOTE_MEMORY_MIB,
     timeout=7200,
     volumes={VOLUME_ROOT: cache_volume},
-    env=_runtime_env_from_client(),
+    env=_remote_env_from_config(),
 )
 def cpu_remote(entrypoint_file: str, extra_args: list[str] | None = None) -> dict[str, Any]:
     cache_volume.reload()
@@ -357,7 +426,7 @@ def cpu_remote(entrypoint_file: str, extra_args: list[str] | None = None) -> dic
     memory=REMOTE_MEMORY_MIB,
     timeout=1800,
     volumes={VOLUME_ROOT: cache_volume},
-    env=_runtime_env_from_client(),
+    env=_remote_env_from_config(),
 )
 def gpu_remote(entrypoint_file: str, extra_args: list[str] | None = None) -> dict[str, Any]:
     cache_volume.reload()
@@ -373,15 +442,10 @@ def gpu_remote(entrypoint_file: str, extra_args: list[str] | None = None) -> dic
 
 
 @app.local_entrypoint()
-def main(action: str) -> None:
-    valid_actions = {"prepare", "train"}
-    if action not in valid_actions:
-        valid = ", ".join(sorted(valid_actions))
-        raise SystemExit(f"Unknown action '{action}'. Valid actions: {valid}")
-
-    extra_args = _extra_args_from_env()
-    quiet_mode = _quiet_mode_from_env()
-    entrypoint_file = _train_entrypoint_override_from_env() or "train_gpt.py"
+def main() -> None:
+    action = CONFIG.action
+    entrypoint_file = CONFIG.train_entrypoint or "train_gpt.py"
+    extra_args = CONFIG.extra_args
     remote_function = gpu_remote
     if action == "prepare":
         if prepare_entrypoint is None:
@@ -390,7 +454,7 @@ def main(action: str) -> None:
         remote_function = cpu_remote
 
     with modal.enable_output() as output_manager:
-        output_manager.set_quiet_mode(quiet_mode)
+        output_manager.set_quiet_mode(CONFIG.quiet)
         result = remote_function.remote(entrypoint_file, extra_args)
 
     if result["returncode"] != 0:

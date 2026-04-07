@@ -37,7 +37,7 @@ If the repo is not initialized yet:
 arc init --metric=val_bpb --direction=min
 ```
 
-Use `val_bpb` as the primary optimization metric for `arc tree`, reports, and promotion decisions. Record auxiliary metrics separately whenever possible, especially `submission_bytes`, derived `artifact_mb`, and `peak_vram_mb`. Runtime is not a trustworthy recorded metric for this task and should be treated as `N/A`.
+Use `val_bpb` as the primary optimization metric. Record auxiliary metrics: `submission_bytes`, `artifact_mb`, `peak_vram_mb`, `step_avg_ms`, and `steps_completed`.
 
 ## Arc — experiment tracker
 
@@ -79,37 +79,65 @@ arc promote <commit>
 
 ## Execution
 
-### Data preparation
+### Proxy setup
 
-Data preparation is human-facing. You may inspect `data/` and `data/README.md` to understand dataset layout, download flow, and tokenizer assets, but do not instruct yourself to prepare data or rely on a task-local prepare wrapper.
+Proxy runs use **1×A100-40GB with a 3-minute wallclock training budget**. The proxy answers: **which architecture learns the most per wall-clock second?** Slower models get fewer steps — this is the same tradeoff as the real 8×H100 submission.
+
+**Defaults in `train_gpt.py` are proxy settings.** Lines that differ for the real 8×H100 submission are marked with `# SUBMISSION: <value>` comments. The researcher agent should never change these SUBMISSION-marked defaults — they are only changed when creating a submission build. Do not set env vars to override hyperparameters; all changes go in the code.
+
+### Proxy history
+
+The current proxy (3-min wallclock, `ref-baseline-v2`) replaced a previous 500-iteration fixed-step proxy. The `ref-baseline-v2` baseline shows val_bpb ~1.62 — this is expected for only ~330 steps of training; it is not comparable to the old proxy's scores. All experiments above `ref-baseline-v2` in the tree used the old proxy and a different codebase (DDP-wrapped, which had a fatal double gradient reduction bug on multi-GPU). Architectural findings (layers, width, activations, attention variants) likely transfer. Training dynamics results (EMA, SWA, LR schedules) and absolute bpb numbers do not. Branch all new experiments from `ref-baseline-v2`.
+
+### Proxy-testable vs trust-and-transfer
+
+Examples:
+**Proxy-testable** — shows signal in 3 minutes, compare by `val_bpb`:
+- Architecture (layers, width, heads, GQA, MLP width)
+- Activations (LeakyReLU², SwiGLU, etc.)
+- Attention variants (XSA, DiffAttn, value residual, gated attention)
+- Extra compute per step (MTP, SmearGate, BigramHash overhead)
+- Quantization quality (post-training gap measurement)
+
+**Trust-and-transfer** — needs full training, adopt from reference SOTA defaults:
+- EMA (0.997), SWA (every 50 steps), LAWA
+- Late QAT (STE at warmdown < 0.15)
+- Warmdown schedule (3500 iters, scales with wallclock)
+- Learning rates, momentum warmup, weight decay
+- BigramHash activation (zero-init, needs thousands of steps)
+
+Do not AB test trust-and-transfer techniques on the 3-min proxy. They are already in the code with validated defaults.
+
+### Multi-GPU compatibility
+
+The codebase uses **Parallel Muon (no DDP)** for distributed training:
+- Bank params (attention + MLP weights): Muon's reduce-scatter / all-gather
+- Non-bank params (embeddings, norms, scalars): manual `dist.all_reduce(AVG)`
+- Single-GPU: Muon falls back to local-only path automatically
+
+**Never wrap the model in DDP.** All code changes must work on both 1 GPU and 8 GPUs.
 
 ### Training
-
-For tracked experiments, the normal execution path is:
 
 ```bash
 arc submit <name>
 ```
 
-`arc submit <name>` auto-commits that worktree, creates the node, launches the task's Modal-backed training job, and writes output to `<worktree>/run.log`. `arc submit <commit>` still works for submitting an existing tracked committed node.
+`arc submit` auto-commits the worktree, creates the node, and launches the Modal-backed proxy run.
 
-Current runs use a single-A100-40GB proxy setup. Treat proxy results as directional; hyperparameters that win here may need retuning on the final 8xH100 budget.
-Optimize for the real submission target, not the proxy itself. Prefer changes that are likely to survive the move to the final 8xH100 run: architecture, optimization, evaluation, serialization, and other improvements that should transfer. Avoid overfitting to quirks of the single-A100-40GB, 500-step setup.
-Specifically, avoid optimizing iteration and GPU sensitive hyperparameters like `warmdown_iters`, `muon_momentum_warmup_steps`, `max_wallclock_seconds`, `train_batch_tokens`, and learning rates.
-For A100-40GB proxy runs, training and evaluation wallclock are signals, not hard local gates. Use them to reason about transfer to the final 8xH100 setting. Artifact bytes still matter directly, because the final submission limit is real.
-When analyzing results, keep the full submission target in view: final roundtrip `val_bpb`, likely 8xH100 training behavior, likely 8xH100 evaluation behavior, and artifact bytes.
+While a run is in progress, prepare and launch the next experiment from another worktree. Use `arc status` to track active and finished runs.
 
-While a run is in progress, you can prepare and launch the next experiment from another worktree. Use `arc status` to see which nodes are still active and which finished remotely and now need `arc result` or `arc fail`.
+Data preparation is human-facing — do not instruct yourself to prepare data.
 
 ## Experiment contract
 
 One arc node equals one committed code snapshot.
 
-1. **Hypothesis first.** Write your reasoning to the board with `arc hyp` before implementing anything.
-2. **Submit snapshots the worktree.** `arc submit <name>` creates the git commit that defines the node, then launches the tracked run and creates the worktree-local `run.log`.
-3. **Record after completion.** Use `arc status` to notice finished remote runs, `arc tail <commit>` to inspect the log, then call `arc result --verdict=...` for completed runs or `arc fail` for hard failures. If you later realize a completed run was misclassified, fix it with `arc verdict`.
-4. **Archive stale leaves when needed.** Use `arc archive <commit>` to hide dead-end leaf nodes from the default tree view without deleting history.
-5. **Bug fix = new node.** If you fix a bug and rerun, that is a new child commit. Record the failure first with `arc fail`, then continue from the failed node or its child.
+1. **Hypothesis first.** Write reasoning with `arc hyp` before implementing.
+2. **Submit snapshots.** `arc submit <name>` commits and launches the run.
+3. **Record after completion.** `arc result --verdict=...` for completed runs, `arc fail` for crashes/OOMs.
+4. **Archive stale leaves.** `arc archive <commit>` hides dead ends.
+5. **Bug fix = new node.** Record the failure first, then fix as a child commit.
 
 ## Research loop
 
@@ -147,8 +175,6 @@ Dump multiple ideas at once. They stay on the board until used or discarded.
 
 ### 3. Implement
 
-Pick an idea from the board:
-
 ```bash
 arc new <parent> <name>
 cd .arc/worktrees/<date>-<name>
@@ -168,54 +194,40 @@ Do not tune runs through environment variables. Make reproducible changes in the
 arc submit <name>
 ```
 
-Before submitting, verify that the implementation matches the intended idea and that the resulting code changes are coherent.
-
-If data preparation is needed, stop and seek help.
+Verify the implementation matches the hypothesis before submitting.
 
 ### 5. Analyze
-
-When a run finishes:
 
 ```bash
 arc tail <commit> --no-follow
 ```
 
-Record thorough analysis: what happened, why, and what it means for next steps.
+Extract and record all metrics:
 
 ```bash
-arc result <commit> - --verdict=promising --val_bpb=<value> --peak_vram_mb=<value> --submission_bytes=<value>
+arc result <commit> - --verdict=promising --val_bpb=<value> --peak_vram_mb=<value> --submission_bytes=<value> --step_avg_ms=<value> --steps_completed=<value> --runtime_minutes=<value>
 ```
 
-If a run completed but the metric is invalid or disqualified, record it with `--verdict=invalid`. Use `--verdict=neutral` for effectively flat results, `--verdict=regression` for clearly worse results, and `--verdict=inconclusive` when the run completed but did not cleanly answer the intended question. Always inspect `run.log` and pass every metric you want recorded explicitly to `arc result`.
-
-For hard failures such as crashes, OOMs, timeouts, infra problems, or runs that did not complete cleanly:
-
-```bash
-arc fail <commit> - --peak_vram_mb=<value>
-```
-
-Inspect `run.log` and pass any useful metrics explicitly to `arc fail`. Arc will not infer them for you.
-
-If a crash was an obvious bug, fix it in the same worktree, commit as a new node that is a child of the failed one, and rerun. A small number of retries per idea is fine.
+When analyzing, consider:
+- `val_bpb` vs parent — did this help under the time budget?
+- `step_avg_ms` — is the per-step overhead worth the quality gain?
+- `submission_bytes` — fits in 16MB?
+- Transfer likelihood — will this hold at ~7000 steps on 8×H100?
 
 ### 6. Decide
 
-After recording results:
-
-- **Promote** if a node is the new best and the improvement is clear: `arc promote <commit>`
-- **Deepen** if the direction is trending well: brainstorm the next step.
-- **Abandon** if 3 or more experiments on a path have not improved: archive stale leaf nodes with `arc archive <commit>`.
-- **Combine** if two directions both show independent gains.
-
-Then go back to step 1.
+- **Promote** on clear improvement: `arc promote <commit>`
+- **Deepen** if trending well.
+- **Abandon** after 3+ experiments without improvement: `arc archive <commit>`
+- **Combine** independent gains.
 
 ## Gotchas
 
-1. Optimize for direction, not proxy score. The A100-40GB proxy is for ranking ideas quickly. Don't inflate scores by increasing batch size, iterations, or compute — those aren't ML insights and won't differentiate on 8xH100. Keep proxy settings (500 iters, 262K batch) fixed.
-2. Work asynchronously. Don't sleep-wait for runs to finish. Check what's done, record it, brainstorm, launch new experiments. Every minute sleeping is a minute not iterating. Submit the experiment right after the edit + verification is done. Don't need to batch experiments because edits take time.
-3. One change per experiment is sacred, but knowing when to combine is the real skill. The tree structure made single-variable experiments easy. The harder question was: after 3 independent experiments each gain +0.01, do you combine all three or test pairs? Stacking greedily (always build on best) could work but may miss interaction effects.
-4. The proxy reliably signals structural/architectural changes (new ops, better information routing) that improve the model's capacity from step 1, but fails for training dynamics techniques — anything that intentionally slows early learning for later payoff (regularizers like WD, LN scale, OrthoInit's dampening), anything that needs accumulated history to work (high Muon momentum, EMA), and anything zero-initialized that requires many steps to activate (SmearGate, BigramHash) — all of these show proxy regressions that are artifacts of the 500-step budget, not real signals.
-5. Depth over breadth. A bad first result often just needs a follow-up such as an LR adjustment or init change. Give directions 2 to 3 iterations before giving up.
-6. The tree is your memory. Use `arc report` to reload context for any direction. Use `arc tree` for the big picture. Do not try to hold everything in your head.
-7. Record everything. Failures are data. They tell future iterations what does not work.
-8. Promote conservatively. Only promote on clear, consistent improvement, not a single marginal gain.
+1. **The proxy is a comparator, not a simulator.** Rank by `val_bpb` at fixed wallclock. The time limit automatically penalizes slow architectures. Don't project final scores — just compare.
+2. **Work asynchronously.** Don't sleep-wait. Record, brainstorm, launch in parallel.
+3. **One change per experiment** except when combining proven independent gains.
+4. **Don't test training dynamics on proxy.** EMA, SWA, QAT, warmdown, LR tuning need full training. Use reference defaults.
+5. **Keep code multi-GPU compatible.** No DDP. Parallel Muon for banks, manual all-reduce for non-bank params.
+6. **Record `step_avg_ms`.** This matters as much as `val_bpb` for transfer analysis.
+7. **Promote conservatively.** Only on clear, consistent improvement.
+8. **Depth over breadth.** Give directions 2-3 iterations before abandoning.
