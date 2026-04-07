@@ -20,12 +20,61 @@ import modal
 
 APP_NAME = "autoresearch-parameter-golf"
 DEFAULT_GPU_TYPE = "A100-40GB"
+DEFAULT_REMOTE_CPU = 8.0
+DEFAULT_REMOTE_MEMORY_GB = 8.0
 GPU_TYPE = os.environ.get("ARC_PARAMETER_GOLF_GPU", DEFAULT_GPU_TYPE).strip() or DEFAULT_GPU_TYPE
-REMOTE_CPU = 4
-REMOTE_MEMORY_MIB = 8 * 1024
+FLASH_ATTENTION_3_WHEEL_INDEX = (
+    "https://windreamer.github.io/flash-attention3-wheels/cu128_torch291"
+)
+UV_PYTHON = "/.uv/.venv/bin/python"
 REMOTE_TASK_DIR = "/root/task"
 VOLUME_ROOT = "/cache-home"
 VOLUME_RUNS_ROOT = f"{VOLUME_ROOT}/parameter-golf-runs"
+
+
+def _env_positive_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip()
+    if not value:
+        return default
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a positive number.") from exc
+    if parsed <= 0:
+        raise RuntimeError(f"{name} must be greater than 0.")
+    return parsed
+
+
+REMOTE_CPU = _env_positive_float("ARC_PARAMETER_GOLF_CPU", DEFAULT_REMOTE_CPU)
+REMOTE_MEMORY_GB = _env_positive_float("ARC_PARAMETER_GOLF_MEMORY_GB", DEFAULT_REMOTE_MEMORY_GB)
+REMOTE_MEMORY_MIB = int(round(REMOTE_MEMORY_GB * 1024))
+
+
+def _requested_gpu_count(gpu_type: str) -> int:
+    _, sep, suffix = gpu_type.rpartition(":")
+    if not sep:
+        return 1
+    try:
+        count = int(suffix)
+    except ValueError:
+        return 1
+    if count <= 0:
+        raise RuntimeError(f"GPU count must be positive in ARC_PARAMETER_GOLF_GPU, got {gpu_type!r}.")
+    return count
+
+
+def _image_build_gpu_type(gpu_type: str) -> str:
+    _, sep, suffix = gpu_type.rpartition(":")
+    if not sep:
+        return gpu_type
+    try:
+        int(suffix)
+    except ValueError:
+        return gpu_type
+    return gpu_type[: -(len(suffix) + 1)]
 
 
 def _train_entrypoint_override_from_env() -> str | None:
@@ -34,6 +83,7 @@ def _train_entrypoint_override_from_env() -> str | None:
         return None
     value = value.strip()
     return value or None
+
 
 def _task_root_from_env() -> Path:
     value = os.environ.get("ARC_PARAMETER_GOLF_REPO_ROOT")
@@ -44,6 +94,28 @@ def _task_root_from_env() -> Path:
 
 def _find_first(paths: list[Path]) -> Path | None:
     return next((path for path in paths if path.is_file()), None)
+
+
+def _should_use_flash3(gpu_type: str | None) -> bool:
+    return bool(gpu_type) and "H100" in gpu_type
+
+
+def _is_h100_gpu() -> bool:
+    return "H100" in GPU_TYPE
+
+
+def _install_h100_deps(image: modal.Image) -> modal.Image:
+    return image.run_commands(
+        (
+            f"uv pip install --python {UV_PYTHON} "
+            f"flash_attn_3 --find-links {FLASH_ATTENTION_3_WHEEL_INDEX}"
+        ),
+        f"uv pip install --python {UV_PYTHON} sentencepiece zstandard",
+        (
+            f'{UV_PYTHON} -c "from flash_attn_interface import flash_attn_func; '
+            "import sentencepiece, zstandard; print('deps OK')\""
+        ),
+    )
 
 
 def _build_local_image() -> tuple[modal.Image, str]:
@@ -85,14 +157,14 @@ def _build_local_image() -> tuple[modal.Image, str]:
             "Parameter Golf task is missing both `prepare.py` and `data/cached_challenge_fineweb.py`."
         )
 
-    image = (
-        modal.Image.debian_slim(python_version="3.12")
-        .uv_sync(
-            uv_project_dir=str(task_root),
-            gpu=GPU_TYPE,
-        )
-        .uv_pip_install("zstandard")
+    image = modal.Image.debian_slim(python_version="3.12").uv_sync(
+        uv_project_dir=str(task_root),
+        gpu=_image_build_gpu_type(GPU_TYPE),
     )
+    if _is_h100_gpu():
+        image = _install_h100_deps(image)
+    else:
+        image = image.uv_pip_install("zstandard")
     image = image.add_local_file(
         train_file,
         remote_path=f"{REMOTE_TASK_DIR}/{train_relative}",
@@ -117,12 +189,18 @@ def _build_local_image() -> tuple[modal.Image, str]:
 
 
 def _runtime_env_from_client() -> dict[str, str]:
-    result: dict[str, str] = {}
+    result: dict[str, str] = {
+        "ARC_PARAMETER_GOLF_GPU": GPU_TYPE,
+    }
     run_id = os.environ.get("ARC_PARAMETER_GOLF_RUN_ID")
     if run_id:
         result["ARC_PARAMETER_GOLF_RUN_ID"] = run_id
-    if GPU_TYPE == "A100-40GB" or GPU_TYPE == "H100":
+    if _should_use_flash3(GPU_TYPE):
+        result["USE_FLASH3"] = "1"
+    if _requested_gpu_count(GPU_TYPE) == 1:
         result["GRAD_ACCUM_STEPS"] = "4"
+    result["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
+    result["TORCHINDUCTOR_CACHE_DIR"] = f"{VOLUME_ROOT}/torch_cache"
     return result
 
 
@@ -149,7 +227,21 @@ if modal.is_local():
     image, prepare_entrypoint = _build_local_image()
 
 
-def _run_python(args: list[str]) -> subprocess.CompletedProcess[str]:
+def _python_command(args: list[str], *, distributed: bool) -> list[str]:
+    if not distributed:
+        return ["python", *args]
+    return [
+        "python",
+        "-m",
+        "torch.distributed.run",
+        "--standalone",
+        "--nproc-per-node",
+        str(_requested_gpu_count(GPU_TYPE)),
+        *args,
+    ]
+
+
+def _run_python(args: list[str], *, distributed: bool = False) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = VOLUME_ROOT
     env["PYTHONUNBUFFERED"] = "1"
@@ -164,8 +256,9 @@ def _run_python(args: list[str]) -> subprocess.CompletedProcess[str]:
     if "TOKENIZER_PATH" not in env:
         env["TOKENIZER_PATH"] = f"{data_root}/tokenizers/fineweb_1024_bpe.model"
     env["PARAMETER_GOLF_OUTPUT_ROOT"] = VOLUME_RUNS_ROOT
+    cmd = _python_command(args, distributed=distributed)
     proc = subprocess.Popen(
-        ["python", *args],
+        cmd,
         cwd=REMOTE_TASK_DIR,
         env=env,
         stdout=subprocess.PIPE,
@@ -206,7 +299,7 @@ def _run_python(args: list[str]) -> subprocess.CompletedProcess[str]:
             writers[stream_name].flush()
 
     return subprocess.CompletedProcess(
-        args=["python", *args],
+        args=cmd,
         returncode=proc.wait(),
         stdout="".join(outputs["stdout"]),
         stderr="".join(outputs["stderr"]),
@@ -226,8 +319,11 @@ def _validate_gpu() -> dict[str, Any]:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available in the Modal GPU container.")
     device_count = torch.cuda.device_count()
-    if device_count != 1:
-        raise RuntimeError(f"Expected exactly one visible GPU, found {device_count}.")
+    expected_device_count = _requested_gpu_count(GPU_TYPE)
+    if device_count != expected_device_count:
+        raise RuntimeError(
+            f"Expected {expected_device_count} visible GPU(s) for {GPU_TYPE}, found {device_count}."
+        )
     return {
         "device_name": torch.cuda.get_device_name(0),
         "device_count": device_count,
@@ -266,7 +362,7 @@ def cpu_remote(entrypoint_file: str, extra_args: list[str] | None = None) -> dic
 def gpu_remote(entrypoint_file: str, extra_args: list[str] | None = None) -> dict[str, Any]:
     cache_volume.reload()
     gpu_info = _validate_gpu()
-    proc = _run_python([entrypoint_file, *(extra_args or [])])
+    proc = _run_python([entrypoint_file, *(extra_args or [])], distributed=gpu_info["device_count"] > 1)
     cache_volume.commit()
     return {
         "returncode": proc.returncode,

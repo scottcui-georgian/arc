@@ -20,6 +20,10 @@ class TaskModule:
     def register_commands(self, subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         del subparsers
 
+    def instruction_path(self, name: str) -> Path | None:
+        del name
+        return None
+
     def format_metric(self, name: str, value: float) -> str:
         del name
         return format_float(value)

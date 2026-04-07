@@ -105,6 +105,10 @@ def normalize_action_args(args: list[str]) -> list[str]:
     return args
 
 
+def should_use_flash3(gpu_type: str | None) -> bool:
+    return bool(gpu_type) and "H100" in gpu_type
+
+
 def resolve_train_entrypoint(repo_root: Path, entrypoint: str) -> tuple[Path, str]:
     path = (repo_root / entrypoint).resolve()
     try:
@@ -122,8 +126,24 @@ class ParameterGolfModalRunner:
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = repo_root.resolve()
 
-    def run(self, action: str, action_args: list[str], *, quiet: bool, gpu: str | None = None) -> int:
-        cmd, env = self._build_invocation(action, action_args, quiet=quiet, gpu=gpu)
+    def run(
+        self,
+        action: str,
+        action_args: list[str],
+        *,
+        quiet: bool,
+        gpu: str | None = None,
+        cpu: float | None = None,
+        memory_gb: float | None = None,
+    ) -> int:
+        cmd, env = self._build_invocation(
+            action,
+            action_args,
+            quiet=quiet,
+            gpu=gpu,
+            cpu=cpu,
+            memory_gb=memory_gb,
+        )
         proc = subprocess.run(cmd, cwd=str(self.repo_root), env=env, check=False)
         return proc.returncode
 
@@ -167,6 +187,8 @@ class ParameterGolfModalRunner:
         *,
         quiet: bool,
         gpu: str | None = None,
+        cpu: float | None = None,
+        memory_gb: float | None = None,
     ) -> tuple[list[str], dict[str, str]]:
         valid_actions = {"prepare", "train"}
         if action not in valid_actions:
@@ -190,6 +212,13 @@ class ParameterGolfModalRunner:
         env["ARC_PARAMETER_GOLF_QUIET"] = "1" if quiet else "0"
         if gpu:
             env["ARC_PARAMETER_GOLF_GPU"] = gpu
+        resolved_gpu = env.get("ARC_PARAMETER_GOLF_GPU")
+        if should_use_flash3(resolved_gpu):
+            env["USE_FLASH3"] = "1"
+        if cpu is not None:
+            env["ARC_PARAMETER_GOLF_CPU"] = str(cpu)
+        if memory_gb is not None:
+            env["ARC_PARAMETER_GOLF_MEMORY_GB"] = str(memory_gb)
 
         modal_app = Path(__file__).with_name("modal_app.py")
         cmd = [modal_path, "run"]

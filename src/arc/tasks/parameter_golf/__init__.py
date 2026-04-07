@@ -16,12 +16,29 @@ from arc.text import format_float
 ARTIFACT_LIMIT_BYTES = 16_000_000
 
 
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be greater than 0")
+    return parsed
+
+
 def _register_run_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--quiet",
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Reduce Modal progress noise when supported.",
+    )
+    parser.add_argument(
+        "--cpu",
+        type=_positive_float,
+        help="Modal CPU count override. Defaults to ARC_PARAMETER_GOLF_CPU or 8.",
+    )
+    parser.add_argument(
+        "--memory-gb",
+        type=_positive_float,
+        help="Modal memory override in GiB. Defaults to ARC_PARAMETER_GOLF_MEMORY_GB or 8.",
     )
 
 
@@ -56,11 +73,20 @@ def _run_action(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int
     quiet = args.quiet if args.quiet is not None else (action != "train")
     runner = ParameterGolfModalRunner(discover_worktree_root())
     gpu = getattr(args, "gpu", None)
-    return runner.run(action, list(extras), quiet=quiet, gpu=gpu)
+    cpu = getattr(args, "cpu", None)
+    memory_gb = getattr(args, "memory_gb", None)
+    return runner.run(action, list(extras), quiet=quiet, gpu=gpu, cpu=cpu, memory_gb=memory_gb)
+
 
 class ParameterGolfTaskModule(TaskModule):
     def __init__(self) -> None:
         super().__init__(name="parameter_golf")
+
+    def instruction_path(self, name: str) -> Path | None:
+        path = Path(__file__).with_name("instructions") / f"{name}.md"
+        if path.is_file():
+            return path
+        return None
 
     def register_commands(self, subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         from arc.commands.base import CommandSpec

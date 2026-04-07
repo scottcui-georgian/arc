@@ -2,6 +2,7 @@ from arc.commands.archive import COMMAND as ARCHIVE
 from arc.commands.fail import COMMAND as FAIL
 from arc.commands.hyp import COMMAND as HYP
 from arc.commands.init import COMMAND as INIT
+from arc.commands.instruction import COMMAND as INSTRUCTION
 from arc.commands.new import COMMAND as NEW
 from arc.commands.promote import COMMAND as PROMOTE
 from arc.commands.report import COMMAND as REPORT
@@ -18,6 +19,7 @@ BUILTIN_COMMANDS = [
     TREE,
     REPORT,
     SHOW,
+    INSTRUCTION,
     NEW,
     HYP,
     SUBMIT,
