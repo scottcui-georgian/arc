@@ -65,7 +65,7 @@ arc new <parent> <name>
 arc submit <name>
 ```
 
-`arc new` accepts a commit hash or `main` as the parent. Worktrees are created at `.arc/worktrees/<date>-<name>`. Use `arc hyp` to list the current hypothesis board, `arc hyp <name> <text | ->` to add or replace a hypothesis entry, and `arc unhyp <name>` to remove one.
+`arc new` accepts a commit hash as the parent. Worktrees are created at `.arc/worktrees/<date>-<name>`. Use `arc hyp` to list the current hypothesis board, `arc hyp <name> <text | ->` to add or replace a hypothesis entry, and `arc unhyp <name>` to remove one.
 
 ### Recording results
 
@@ -85,6 +85,8 @@ arc promote <commit>
 Proxy runs use **1×A100-40GB with a 3-minute wallclock training budget**. The proxy answers: **which architecture learns the most per wall-clock second?** Slower models get fewer steps — this is the same tradeoff as the real 8×H100 submission.
 
 **Defaults in `train_gpt.py` are proxy settings.** Lines that differ for the real 8×H100 submission are marked with `# SUBMISSION: <value>` comments. The researcher agent should never change these SUBMISSION-marked defaults — they are only changed when creating a submission build. Do not set env vars to override hyperparameters; all changes go in the code.
+
+When the researcher agent implements new techniques and experiments on the proxy, mark `# SUBMISSION` if the technique requires different hyperparameter/implementation for submission.
 
 ### Proxy history
 
