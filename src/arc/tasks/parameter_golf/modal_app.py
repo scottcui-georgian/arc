@@ -157,6 +157,9 @@ REMOTE_CPU = CONFIG.cpu
 REMOTE_MEMORY_GB = CONFIG.memory_gb
 REMOTE_MEMORY_MIB = int(round(REMOTE_MEMORY_GB * 1024))
 
+# gpu_remote Modal wall clock: `arc submit` stays bounded; `arc run train` allows longer interactive runs.
+GPU_REMOTE_TIMEOUT_SECONDS = 10800 if CONFIG.mode == "run" else 1800
+
 
 def _requested_gpu_count(gpu_type: str) -> int:
     _, sep, suffix = gpu_type.rpartition(":")
@@ -424,7 +427,7 @@ def cpu_remote(entrypoint_file: str, extra_args: list[str] | None = None) -> dic
     gpu=GPU_TYPE,
     cpu=REMOTE_CPU,
     memory=REMOTE_MEMORY_MIB,
-    timeout=1800,
+    timeout=GPU_REMOTE_TIMEOUT_SECONDS,
     volumes={VOLUME_ROOT: cache_volume},
     env=_remote_env_from_config(),
 )
