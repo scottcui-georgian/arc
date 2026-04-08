@@ -6,23 +6,13 @@ The proxy `train_gpt.py` defaults are set for the proxy (1×A100-40GB, 3 min). L
 
 Find all `# SUBMISSION:` comments in `Hyperparameters` and change each default to the submission value:
 
-| Setting | Proxy default | Submission value |
-|---------|---------------|------------------|
-| `train_batch_tokens` | 262,144 | 786,432 |
-| `max_wallclock_seconds` | 180.0 | 600.0 |
-| `warmdown_iters` | 0 | 3500 |
-| `muon_momentum_warmup_steps` | 20 | 1500 |
-| `val_loss_every` | 0 | 4000 |
-| `train_log_every` | 20 | 500 |
-| `eval_stride` | 0 | 64 |
-| `ema_enabled` | 0 | 1 |
-| `swa_enabled` | 0 | 1 |
-| `late_qat_threshold` | 0.0 | 0.15 |
-| `gptq_calib_seqs` | 16 | 64 |
-
-No other code changes needed. The code auto-detects:
+The code auto-detects:
 - Single vs multi-GPU (Parallel Muon handles both)
 - FA2 vs FA3 (try/except import, Hopper auto-detected)
+
+If you spot anything else that should be changed for submission, please raise them to the user.
+
+Note: ignore the constraint on number of lines of code for now, it's easy to compress the code file later.
 
 ## Features that activate at full budget
 

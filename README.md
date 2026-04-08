@@ -52,6 +52,9 @@ committed node.
 Useful follow-up commands:
 
 ```bash
+arc hyp
+arc hyp <name> <text | ->
+arc unhyp <name>
 arc status
 arc tail <commit>
 arc result <commit> --verdict=promising|regression|neutral|inconclusive|invalid ...
@@ -62,6 +65,9 @@ arc archive <commit>
 
 `arc status` inspects each running node's `run.log` so it can tell you
 when a remote run already finished, failed remotely, or lost its log.
+Use `arc hyp` to list the pending hypothesis board, `arc hyp <name> ...`
+to add or replace an entry, and `arc unhyp <name>` to remove one you no
+longer want to keep around.
 Use `arc fail` only for hard execution failures such as crashes, OOMs,
 or infra problems. Use `arc result --verdict=invalid` for completed
 runs whose reported metric is unusable or disqualified, `neutral` for

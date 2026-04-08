@@ -10,6 +10,7 @@ from arc.tasks.parameter_golf.runtime import (
     DEFAULT_GPU_TYPE,
     DEFAULT_REMOTE_CPU,
     DEFAULT_REMOTE_MEMORY_GB,
+    SUBMIT_GRAD_ACCUM_STEPS,
     SUBMIT_MAX_WALLCLOCK_SECONDS,
     ParameterGolfModalRunner,
     should_use_flash3,
@@ -106,7 +107,10 @@ class ParameterGolfRuntimeTests(unittest.TestCase):
             config.forwarded_env["MAX_WALLCLOCK_SECONDS"],
             str(SUBMIT_MAX_WALLCLOCK_SECONDS),
         )
-        self.assertEqual(config.forwarded_env["GRAD_ACCUM_STEPS"], "4")
+        self.assertEqual(
+            config.forwarded_env["GRAD_ACCUM_STEPS"],
+            str(SUBMIT_GRAD_ACCUM_STEPS),
+        )
         self.assertNotIn("ITERATIONS", config.forwarded_env)
         self.assertNotIn("RUN_ID", config.forwarded_env)
 

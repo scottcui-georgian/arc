@@ -52,6 +52,7 @@ arc show <commit>
 arc status
 arc tail <commit>
 arc hyp
+arc unhyp <name>
 ```
 
 `arc status` inspects each running node's `run.log`. It distinguishes runs that are still active from runs whose remote Modal job already finished and now need `arc result` or `arc fail`.
@@ -64,7 +65,7 @@ arc new <parent> <name>
 arc submit <name>
 ```
 
-`arc new` accepts a commit hash or `main` as the parent. Worktrees are created at `.arc/worktrees/<date>-<name>`.
+`arc new` accepts a commit hash or `main` as the parent. Worktrees are created at `.arc/worktrees/<date>-<name>`. Use `arc hyp` to list the current hypothesis board, `arc hyp <name> <text | ->` to add or replace a hypothesis entry, and `arc unhyp <name>` to remove one.
 
 ### Recording results
 
@@ -162,6 +163,7 @@ Brainstorm ideas onto the hypothesis board. Write thorough reasoning: what you e
 
 ```bash
 arc hyp <name> -
+arc unhyp <name>
 ```
 
 Consider all four moves:

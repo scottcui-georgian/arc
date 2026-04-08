@@ -287,6 +287,7 @@ class ArcStore:
         self,
         commit: str,
         *,
+        name: str | None = None,
         status: Status | None = None,
         hypothesis: str | None = None,
         analysis: str | None = None,
@@ -296,6 +297,9 @@ class ArcStore:
         self.require_initialized()
         assignments: list[str] = []
         params: list[str | None] = []
+        if name is not None:
+            assignments.append("name = ?")
+            params.append(name)
         if status is not None:
             assignments.append("status = ?")
             params.append(status)

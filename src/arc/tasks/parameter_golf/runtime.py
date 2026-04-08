@@ -17,6 +17,7 @@ DEFAULT_GPU_TYPE = "A100-40GB"
 DEFAULT_REMOTE_CPU = 8.0
 DEFAULT_REMOTE_MEMORY_GB = 8.0
 SUBMIT_MAX_WALLCLOCK_SECONDS = 180
+SUBMIT_GRAD_ACCUM_STEPS = 2
 MODAL_CONFIG_ENV_VAR = "ARC_PARAMETER_GOLF_MODAL_CONFIG"
 
 _RUN_FORWARD_ENV_KEYS = frozenset(
@@ -364,7 +365,7 @@ class ParameterGolfModalRunner:
         ensure_task_layout(self.repo_root)
         source_env = self._source_env()
         forwarded_env = _forward_env(source_env, _SUBMIT_FORWARD_ENV_KEYS)
-        forwarded_env["GRAD_ACCUM_STEPS"] = "4"
+        forwarded_env["GRAD_ACCUM_STEPS"] = str(SUBMIT_GRAD_ACCUM_STEPS)
         forwarded_env["MAX_WALLCLOCK_SECONDS"] = str(SUBMIT_MAX_WALLCLOCK_SECONDS)
         return ParameterGolfModalConfig(
             mode="submit",
