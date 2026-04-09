@@ -189,16 +189,26 @@ def _find_first(paths: list[Path]) -> Path | None:
     return next((path for path in paths if path.is_file()), None)
 
 
-def _install_h100_deps(image: modal.Image) -> modal.Image:
+def _install_common_training_deps(image: modal.Image) -> modal.Image:
+    """Packages needed for train_gpt on any GPU (tokenizer + compressed data)."""
+    return image.run_commands(
+        f"uv pip install --python {UV_PYTHON} sentencepiece zstandard",
+        (
+            f'{UV_PYTHON} -c "import sentencepiece, zstandard; print(\'common deps OK\')"'
+        ),
+    )
+
+
+def _install_flash3_deps(image: modal.Image) -> modal.Image:
+    """Flash Attention 3 wheels (e.g. H100); use only when USE_FLASH3 is enabled."""
     return image.run_commands(
         (
             f"uv pip install --python {UV_PYTHON} "
             f"flash_attn_3 --find-links {FLASH_ATTENTION_3_WHEEL_INDEX}"
         ),
-        f"uv pip install --python {UV_PYTHON} sentencepiece zstandard",
         (
             f'{UV_PYTHON} -c "from flash_attn_interface import flash_attn_func; '
-            "import sentencepiece, zstandard; print('deps OK')\""
+            "print('flash-attn OK')\""
         ),
     )
 
@@ -246,10 +256,9 @@ def _build_local_image() -> tuple[modal.Image, str]:
         uv_project_dir=str(task_root),
         gpu=_image_build_gpu_type(GPU_TYPE),
     )
+    image = _install_common_training_deps(image)
     if CONFIG.use_flash3:
-        image = _install_h100_deps(image)
-    else:
-        image = image.uv_pip_install("zstandard")
+        image = _install_flash3_deps(image)
     image = image.add_local_file(
         train_file,
         remote_path=f"{REMOTE_TASK_DIR}/{train_relative}",
