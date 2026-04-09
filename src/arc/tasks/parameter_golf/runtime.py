@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal, Mapping
 
 from arc.errors import ArcError
@@ -184,6 +184,7 @@ class ParameterGolfModalConfig:
     run_id: str
     use_flash3: bool
     forwarded_env: dict[str, str]
+    submission_outputs: bool = False
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -200,6 +201,20 @@ def resolve_train_entrypoint(repo_root: Path, entrypoint: str) -> tuple[Path, st
     if not path.is_file():
         raise ArcError(f"Train entrypoint does not exist: {entrypoint}")
     return path, relative.as_posix()
+
+
+def submission_run_root_from_entrypoint(relative_entrypoint: str) -> str | None:
+    """If the train script is under `.arc/submissions/<folder>/`, return `<folder>`."""
+    normalized = relative_entrypoint.replace("\\", "/")
+    parts = PurePosixPath(normalized).parts
+    if len(parts) < 4:
+        return None
+    if parts[0] != ".arc" or parts[1] != "submissions":
+        return None
+    folder = parts[2]
+    if not folder or folder.endswith(".py"):
+        return None
+    return folder
 
 
 def _env_text(env: Mapping[str, str], name: str) -> str | None:
@@ -330,6 +345,12 @@ class ParameterGolfModalRunner:
         extra_args = normalize_action_args(action_args)
         if action == "train":
             train_entrypoint, extra_args = self._resolve_run_train_entrypoint(source_env, action_args)
+        submission_folder = (
+            submission_run_root_from_entrypoint(train_entrypoint)
+            if action == "train" and train_entrypoint
+            else None
+        )
+        submission_outputs = submission_folder is not None
         gpu_type = gpu or _env_text(source_env, "ARC_PARAMETER_GOLF_GPU") or DEFAULT_GPU_TYPE
         cpu_value = cpu if cpu is not None else _env_positive_float(
             source_env,
@@ -341,11 +362,15 @@ class ParameterGolfModalRunner:
             "ARC_PARAMETER_GOLF_MEMORY_GB",
             DEFAULT_REMOTE_MEMORY_GB,
         )
-        run_id = (
-            _env_text(source_env, "ARC_PARAMETER_GOLF_RUN_ID")
-            or _env_text(source_env, "RUN_ID")
-            or self.repo_root.name
-        )
+        if submission_outputs:
+            assert submission_folder is not None
+            run_id = submission_folder
+        else:
+            run_id = (
+                _env_text(source_env, "ARC_PARAMETER_GOLF_RUN_ID")
+                or _env_text(source_env, "RUN_ID")
+                or self.repo_root.name
+            )
         return ParameterGolfModalConfig(
             mode="run",
             action=action,
@@ -359,6 +384,7 @@ class ParameterGolfModalRunner:
             run_id=run_id,
             use_flash3=should_use_flash3(gpu_type),
             forwarded_env=_forward_env(source_env, _RUN_FORWARD_ENV_KEYS),
+            submission_outputs=submission_outputs,
         )
 
     def _build_submit_train_config(self) -> ParameterGolfModalConfig:
@@ -380,6 +406,7 @@ class ParameterGolfModalRunner:
             run_id=self.repo_root.name,
             use_flash3=should_use_flash3(DEFAULT_GPU_TYPE),
             forwarded_env=forwarded_env,
+            submission_outputs=False,
         )
 
     def _build_invocation(self, config: ParameterGolfModalConfig) -> tuple[list[str], dict[str, str]]:

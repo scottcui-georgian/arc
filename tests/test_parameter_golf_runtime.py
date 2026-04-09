@@ -13,6 +13,7 @@ from arc.tasks.parameter_golf.runtime import (
     SUBMIT_GRAD_ACCUM_STEPS,
     SUBMIT_MAX_WALLCLOCK_SECONDS,
     ParameterGolfModalRunner,
+    submission_run_root_from_entrypoint,
     should_use_flash3,
 )
 
@@ -35,6 +36,33 @@ class ParameterGolfRuntimeTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
+
+    def test_submission_run_root_from_entrypoint(self) -> None:
+        self.assertEqual(
+            submission_run_root_from_entrypoint(".arc/submissions/20260409-fast-muonplus/train_gpt.py"),
+            "20260409-fast-muonplus",
+        )
+        self.assertIsNone(submission_run_root_from_entrypoint("train_gpt.py"))
+        self.assertIsNone(submission_run_root_from_entrypoint(".arc/submissions/foo.py"))
+        self.assertIsNone(
+            submission_run_root_from_entrypoint(".arc/submissions"),
+        )
+
+    def test_run_config_submission_train_sets_submission_outputs_and_run_id(self) -> None:
+        sub_root = self.repo_root / ".arc" / "submissions" / "20260409-fast-muonplus"
+        sub_root.mkdir(parents=True)
+        (sub_root / "train_gpt.py").write_text("print('sub')\n", encoding="utf-8")
+        (self.repo_root / ".env").write_text("RUN_ID=should-be-overridden\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            config = self.runner._build_run_config(
+                "train",
+                [".arc/submissions/20260409-fast-muonplus/train_gpt.py"],
+                quiet=False,
+            )
+        self.assertTrue(config.submission_outputs)
+        self.assertEqual(config.run_id, "20260409-fast-muonplus")
+        self.assertEqual(config.train_entrypoint, ".arc/submissions/20260409-fast-muonplus/train_gpt.py")
+        self.assertEqual(config.forwarded_env.get("RUN_ID"), "should-be-overridden")
 
     def test_h100_gpu_types_enable_flash3(self) -> None:
         self.assertTrue(should_use_flash3("H100"))
@@ -77,6 +105,7 @@ class ParameterGolfRuntimeTests(unittest.TestCase):
         self.assertEqual(config.forwarded_env["RUN_ID"], "debug-a100")
         self.assertEqual(config.forwarded_env["MAX_WALLCLOCK_SECONDS"], "45")
         self.assertEqual(config.forwarded_env["TRAIN_BATCH_TOKENS"], "123456")
+        self.assertFalse(config.submission_outputs)
 
     def test_submit_config_is_arc_owned_and_hardcodes_wallclock(self) -> None:
         with mock.patch.dict(
@@ -113,6 +142,7 @@ class ParameterGolfRuntimeTests(unittest.TestCase):
         )
         self.assertNotIn("ITERATIONS", config.forwarded_env)
         self.assertNotIn("RUN_ID", config.forwarded_env)
+        self.assertFalse(config.submission_outputs)
 
 
 if __name__ == "__main__":

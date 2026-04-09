@@ -31,6 +31,7 @@ UV_PYTHON = "/.uv/.venv/bin/python"
 REMOTE_TASK_DIR = "/root/task"
 VOLUME_ROOT = "/cache-home"
 VOLUME_RUNS_ROOT = f"{VOLUME_ROOT}/parameter-golf-runs"
+VOLUME_SUBMISSIONS_ROOT = f"{VOLUME_ROOT}/parameter-golf-submissions"
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class ModalLaunchConfig:
     run_id: str
     use_flash3: bool
     forwarded_env: dict[str, str]
+    submission_outputs: bool
 
 
 def _payload_positive_float(payload: dict[str, Any], name: str, default: float) -> float:
@@ -86,6 +88,15 @@ def _payload_optional_string(payload: dict[str, Any], name: str) -> str | None:
 
 def _payload_bool(payload: dict[str, Any], name: str) -> bool:
     value = payload.get(name)
+    if not isinstance(value, bool):
+        raise RuntimeError(f"{name} must be a boolean.")
+    return value
+
+
+def _payload_bool_default(payload: dict[str, Any], name: str, default: bool) -> bool:
+    value = payload.get(name)
+    if value is None:
+        return default
     if not isinstance(value, bool):
         raise RuntimeError(f"{name} must be a boolean.")
     return value
@@ -148,6 +159,7 @@ def _load_modal_config_from_env() -> ModalLaunchConfig:
         run_id=_payload_string(payload, "run_id"),
         use_flash3=_payload_bool(payload, "use_flash3"),
         forwarded_env=_payload_env_dict(payload, "forwarded_env"),
+        submission_outputs=_payload_bool_default(payload, "submission_outputs", False),
     )
 
 
@@ -321,26 +333,51 @@ def _python_command(args: list[str], *, distributed: bool) -> list[str]:
     ]
 
 
+def _abs_entrypoint_if_needed(relative_or_abs: str) -> str:
+    """Train scripts are mounted under REMOTE_TASK_DIR; use absolute path when cwd is elsewhere."""
+    if relative_or_abs.startswith("/"):
+        return relative_or_abs
+    return f"{REMOTE_TASK_DIR}/{relative_or_abs}"
+
+
 def _run_python(args: list[str], *, distributed: bool = False) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.pop(MODAL_CONFIG_ENV_VAR, None)
     env["HOME"] = VOLUME_ROOT
     env["PYTHONUNBUFFERED"] = "1"
-    if "RUN_ID" not in env:
-        run_id = env.get("ARC_PARAMETER_GOLF_RUN_ID", "").strip()
-        if run_id:
-            env["RUN_ID"] = run_id
     data_root = f"{VOLUME_ROOT}/parameter-golf-data"
     env["PARAMETER_GOLF_MODAL_DATA_ROOT"] = data_root
     if "DATA_PATH" not in env:
         env["DATA_PATH"] = f"{data_root}/datasets/fineweb10B_sp1024"
     if "TOKENIZER_PATH" not in env:
         env["TOKENIZER_PATH"] = f"{data_root}/tokenizers/fineweb_1024_bpe.model"
-    env["PARAMETER_GOLF_OUTPUT_ROOT"] = VOLUME_RUNS_ROOT
-    cmd = _python_command(args, distributed=distributed)
+    out_root = VOLUME_SUBMISSIONS_ROOT if CONFIG.submission_outputs else VOLUME_RUNS_ROOT
+    env["PARAMETER_GOLF_OUTPUT_ROOT"] = out_root
+    if CONFIG.submission_outputs:
+        run_fallback = env.get("ARC_PARAMETER_GOLF_RUN_ID", "").strip() or CONFIG.run_id
+        env["RUN_ID"] = run_fallback
+    elif "RUN_ID" not in env:
+        run_id = env.get("ARC_PARAMETER_GOLF_RUN_ID", "").strip()
+        if run_id:
+            env["RUN_ID"] = run_id
+
+    # Submission train scripts often write logs/artifacts with relative paths (like `arc submit`'s
+    # root train_gpt using PARAMETER_GOLF_OUTPUT_ROOT). chdir to the volume run dir so those paths
+    # persist on the cache volume without changing train_gpt.py.
+    if CONFIG.submission_outputs:
+        work_dir = f"{out_root}/{CONFIG.run_id}"
+        os.makedirs(work_dir, exist_ok=True)
+        run_args = list(args)
+        if run_args:
+            run_args[0] = _abs_entrypoint_if_needed(run_args[0])
+    else:
+        work_dir = REMOTE_TASK_DIR
+        run_args = args
+
+    cmd = _python_command(run_args, distributed=distributed)
     proc = subprocess.Popen(
         cmd,
-        cwd=REMOTE_TASK_DIR,
+        cwd=work_dir,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
