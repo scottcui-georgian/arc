@@ -6,13 +6,14 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from arc.app import ArcApp
-    from arc.executors.base import SubmitResult
     from arc.models import Node, NodeRecord
-    from arc.tasks.base import TaskModule
+    from arc.tasks.base import SubmitOutcome, TaskModule
 else:
-    from arc.tasks.base import TaskModule
+    from arc.tasks.base import SubmitOutcome, TaskModule
 
+from arc.errors import ArcError
 from arc.text import format_float
+
 ARTIFACT_LIMIT_BYTES = 16_000_000
 
 
@@ -46,7 +47,7 @@ def _register_train_parser(parser: argparse.ArgumentParser) -> None:
     _register_run_parser(parser)
     parser.add_argument(
         "--gpu",
-        help="Modal GPU type override. Defaults to ARC_PARAMETER_GOLF_GPU or A100-40GB.",
+        help="Modal GPU type override. Defaults to ARC_PARAMETER_GOLF_GPU or H100.",
     )
 
 
@@ -171,16 +172,49 @@ class ParameterGolfTaskModule(TaskModule):
             parts.append(f"{runtime_minutes:.2f}m")
         else:
             parts.append("runtime:N/A")
+        submit_gpu_count = record.metrics.get("submit_gpu_count")
+        submit_train_wallclock = record.metrics.get("submit_train_wallclock")
+        if submit_gpu_count is not None and submit_train_wallclock is not None:
+            parts.append(f"{int(submit_gpu_count)}×H100 {int(submit_train_wallclock)}s")
         if not parts:
             return ""
         return " (" + " | ".join(parts) + ")"
 
-    def submit(self, node: Node, worktree_root: Path, log_path: Path) -> SubmitResult | None:
-        from arc.tasks.parameter_golf.runtime import ParameterGolfModalRunner
+    def submit(
+        self,
+        node: Node,
+        worktree_root: Path,
+        log_path: Path,
+        *,
+        config_name: str | None = None,
+        train_wallclock: int | None = None,
+        grad_accum_steps: int | None = None,
+    ) -> SubmitOutcome | None:
+        from arc.tasks.parameter_golf.runtime import (
+            ParameterGolfModalRunner,
+            submit_gpu_count,
+        )
 
         del node
+        if config_name is None:
+            raise ArcError(
+                "Parameter Golf submit requires --config {proxy,full}."
+            )
         runner = ParameterGolfModalRunner(worktree_root)
-        return runner.submit_train(log_path)
+        result, submit_config = runner.submit_train(
+            log_path,
+            config_name=config_name,
+            train_wallclock=train_wallclock,
+            grad_accum_steps=grad_accum_steps,
+        )
+        effective_wallclock = (
+            train_wallclock if train_wallclock is not None else submit_config.train_wallclock
+        )
+        metrics: dict[str, float] = {
+            "submit_gpu_count": float(submit_gpu_count(submit_config.gpu_type)),
+            "submit_train_wallclock": float(effective_wallclock),
+        }
+        return SubmitOutcome(result=result, metrics=metrics)
 
 
 def build_task_module() -> TaskModule:

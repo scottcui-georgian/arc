@@ -5,19 +5,25 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Literal, Mapping
+
+import yaml
 
 from arc.errors import ArcError
 from arc.executors.base import SubmitResult
 from arc.timeutil import utc_now_iso
 
-DEFAULT_GPU_TYPE = "A100-40GB"
+DEFAULT_GPU_TYPE = "H100"
 DEFAULT_REMOTE_CPU = 8.0
 DEFAULT_REMOTE_MEMORY_GB = 8.0
 SUBMIT_MAX_WALLCLOCK_SECONDS = 180
-SUBMIT_GRAD_ACCUM_STEPS = 2
+SUBMIT_GRAD_ACCUM_STEPS = 1
+SUBMIT_GRAD_ACCUM_ALLOWED = frozenset({1, 2, 4})
+SUBMIT_CONFIG_CHOICES: tuple[str, ...] = ("proxy", "full")
+SUBMIT_CONFIG_DIR = "configs"
+ALLOWED_SUBMIT_GPU_TYPES = frozenset({"H100", "H100:8"})
 MODAL_CONFIG_ENV_VAR = "ARC_PARAMETER_GOLF_MODAL_CONFIG"
 
 _RUN_FORWARD_ENV_KEYS = frozenset(
@@ -72,6 +78,123 @@ _SUBMIT_FORWARD_ENV_KEYS = frozenset(
         "HUGGING_FACE_HUB_TOKEN",
     }
 )
+
+
+@dataclass(frozen=True)
+class ParameterGolfSubmitConfig:
+    """Resolved values from a worktree-local proxy.yaml / full.yaml."""
+
+    name: str
+    gpu_type: str
+    train_wallclock: int
+    env: dict[str, str] = field(default_factory=dict)
+    modal_timeout: int | None = None
+    cpu: float | None = None
+    memory_gb: float | None = None
+
+
+def _submit_config_path(repo_root: Path, name: str) -> Path:
+    return repo_root / SUBMIT_CONFIG_DIR / f"{name}.yaml"
+
+
+def load_submit_config(repo_root: Path, name: str) -> ParameterGolfSubmitConfig:
+    """Load and validate ``configs/<name>.yaml`` from the worktree root.
+
+    The YAML file must contain:
+      gpu: "H100" | "H100:8"
+      train_wallclock: <int seconds, 60..3600>
+      env: { KEY: "value", ... }   # optional
+      modal_timeout: <int seconds> # optional override for the Modal job timeout
+    """
+    if name not in SUBMIT_CONFIG_CHOICES:
+        allowed = ", ".join(SUBMIT_CONFIG_CHOICES)
+        raise ArcError(f"Unknown submit config `{name}`. Choose from: {allowed}.")
+    path = _submit_config_path(repo_root, name)
+    if not path.is_file():
+        raise ArcError(
+            f"Missing submit config at `{path.relative_to(repo_root)}`. "
+            f"Each worktree must ship `{SUBMIT_CONFIG_DIR}/proxy.yaml` and "
+            f"`{SUBMIT_CONFIG_DIR}/full.yaml`."
+        )
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ArcError(f"Could not parse `{path}`: {exc}") from exc
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ArcError(f"`{path}` must be a YAML mapping.")
+
+    gpu_type = raw.get("gpu")
+    if not isinstance(gpu_type, str) or gpu_type not in ALLOWED_SUBMIT_GPU_TYPES:
+        allowed = ", ".join(sorted(ALLOWED_SUBMIT_GPU_TYPES))
+        raise ArcError(
+            f"`gpu` in `{path}` must be one of: {allowed}. Got: {gpu_type!r}."
+        )
+
+    wallclock_raw = raw.get("train_wallclock")
+    if not isinstance(wallclock_raw, int) or isinstance(wallclock_raw, bool):
+        raise ArcError(f"`train_wallclock` in `{path}` must be an integer seconds value.")
+    if wallclock_raw < 60 or wallclock_raw > 3600:
+        raise ArcError(
+            f"`train_wallclock` in `{path}` must be between 60 and 3600 seconds."
+        )
+
+    env_raw = raw.get("env") or {}
+    if not isinstance(env_raw, dict):
+        raise ArcError(f"`env` in `{path}` must be a mapping of KEY: value.")
+    env: dict[str, str] = {}
+    for key, value in env_raw.items():
+        if not isinstance(key, str):
+            raise ArcError(f"`env` keys in `{path}` must be strings.")
+        env[key] = str(value)
+
+    modal_timeout = raw.get("modal_timeout")
+    if modal_timeout is not None:
+        if not isinstance(modal_timeout, int) or isinstance(modal_timeout, bool):
+            raise ArcError(f"`modal_timeout` in `{path}` must be an integer seconds value.")
+        if modal_timeout <= 0:
+            raise ArcError(f"`modal_timeout` in `{path}` must be positive.")
+
+    cpu_raw = raw.get("cpu")
+    cpu: float | None = None
+    if cpu_raw is not None:
+        if isinstance(cpu_raw, bool) or not isinstance(cpu_raw, (int, float)):
+            raise ArcError(f"`cpu` in `{path}` must be a positive number.")
+        if cpu_raw <= 0:
+            raise ArcError(f"`cpu` in `{path}` must be positive.")
+        cpu = float(cpu_raw)
+
+    memory_raw = raw.get("memory_gb")
+    memory_gb: float | None = None
+    if memory_raw is not None:
+        if isinstance(memory_raw, bool) or not isinstance(memory_raw, (int, float)):
+            raise ArcError(f"`memory_gb` in `{path}` must be a positive number.")
+        if memory_raw <= 0:
+            raise ArcError(f"`memory_gb` in `{path}` must be positive.")
+        memory_gb = float(memory_raw)
+
+    return ParameterGolfSubmitConfig(
+        name=name,
+        gpu_type=gpu_type,
+        train_wallclock=int(wallclock_raw),
+        env=env,
+        modal_timeout=modal_timeout,
+        cpu=cpu,
+        memory_gb=memory_gb,
+    )
+
+
+def submit_gpu_count(gpu_type: str) -> int:
+    """Parse an 'H100' / 'H100:8' spec into GPU count (matches modal_app)."""
+    _, sep, suffix = gpu_type.rpartition(":")
+    if not sep:
+        return 1
+    try:
+        count = int(suffix)
+    except ValueError:
+        return 1
+    return count if count > 0 else 1
 
 
 @dataclass(frozen=True)
@@ -185,6 +308,7 @@ class ParameterGolfModalConfig:
     use_flash3: bool
     forwarded_env: dict[str, str]
     submission_outputs: bool = False
+    modal_timeout: int | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -268,12 +392,27 @@ class ParameterGolfModalRunner:
         proc = subprocess.run(cmd, cwd=str(self.repo_root), env=env, check=False)
         return proc.returncode
 
-    def submit_train(self, log_path: Path) -> SubmitResult:
-        config = self._build_submit_train_config()
+    def submit_train(
+        self,
+        log_path: Path,
+        *,
+        config_name: str,
+        train_wallclock: int | None = None,
+        grad_accum_steps: int | None = None,
+    ) -> tuple[SubmitResult, ParameterGolfSubmitConfig]:
+        submit_config = load_submit_config(self.repo_root, config_name)
+        config = self._build_submit_train_config(
+            submit_config=submit_config,
+            train_wallclock=train_wallclock,
+            grad_accum_steps=grad_accum_steps,
+        )
         cmd, env = self._build_invocation(config)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(f"[{utc_now_iso()}] submitting Parameter Golf train via Modal\n")
+            handle.write(
+                f"[{utc_now_iso()}] submitting Parameter Golf train via Modal "
+                f"(config={config_name}, gpu={config.gpu_type})\n"
+            )
             handle.flush()
 
         log_wrapper = Path(__file__).with_name("log_wrapper.py")
@@ -296,10 +435,13 @@ class ParameterGolfModalRunner:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        return SubmitResult(
-            backend="parameter-golf-modal",
-            log_path=log_path,
-            process_id=process.pid,
+        return (
+            SubmitResult(
+                backend="parameter-golf-modal",
+                log_path=log_path,
+                process_id=process.pid,
+            ),
+            submit_config,
         )
 
     def _source_env(self) -> dict[str, str]:
@@ -387,26 +529,51 @@ class ParameterGolfModalRunner:
             submission_outputs=submission_outputs,
         )
 
-    def _build_submit_train_config(self) -> ParameterGolfModalConfig:
+    def _build_submit_train_config(
+        self,
+        *,
+        submit_config: ParameterGolfSubmitConfig,
+        train_wallclock: int | None = None,
+        grad_accum_steps: int | None = None,
+    ) -> ParameterGolfModalConfig:
         ensure_task_layout(self.repo_root)
         source_env = self._source_env()
+        # Forwarding order (lowest priority → highest): base source env (HF creds only),
+        # YAML env block, then CLI overrides. CLI > YAML > .env.
         forwarded_env = _forward_env(source_env, _SUBMIT_FORWARD_ENV_KEYS)
-        forwarded_env["GRAD_ACCUM_STEPS"] = str(SUBMIT_GRAD_ACCUM_STEPS)
-        forwarded_env["MAX_WALLCLOCK_SECONDS"] = str(SUBMIT_MAX_WALLCLOCK_SECONDS)
+        forwarded_env.update(submit_config.env)
+
+        accum = SUBMIT_GRAD_ACCUM_STEPS if grad_accum_steps is None else grad_accum_steps
+        if accum not in SUBMIT_GRAD_ACCUM_ALLOWED:
+            allowed = ", ".join(str(v) for v in sorted(SUBMIT_GRAD_ACCUM_ALLOWED))
+            raise ArcError(f"submit grad accumulation must be one of: {allowed}.")
+        forwarded_env["GRAD_ACCUM_STEPS"] = str(accum)
+
+        wallclock = (
+            train_wallclock if train_wallclock is not None else submit_config.train_wallclock
+        )
+        forwarded_env["MAX_WALLCLOCK_SECONDS"] = str(wallclock)
+
+        gpu_type = submit_config.gpu_type
         return ParameterGolfModalConfig(
             mode="submit",
             action="train",
             quiet=False,
             repo_root=str(self.repo_root),
-            gpu_type=DEFAULT_GPU_TYPE,
-            cpu=DEFAULT_REMOTE_CPU,
-            memory_gb=DEFAULT_REMOTE_MEMORY_GB,
+            gpu_type=gpu_type,
+            cpu=submit_config.cpu if submit_config.cpu is not None else DEFAULT_REMOTE_CPU,
+            memory_gb=(
+                submit_config.memory_gb
+                if submit_config.memory_gb is not None
+                else DEFAULT_REMOTE_MEMORY_GB
+            ),
             train_entrypoint=None,
             extra_args=[],
             run_id=self.repo_root.name,
-            use_flash3=should_use_flash3(DEFAULT_GPU_TYPE),
+            use_flash3=should_use_flash3(gpu_type),
             forwarded_env=forwarded_env,
             submission_outputs=False,
+            modal_timeout=submit_config.modal_timeout,
         )
 
     def _build_invocation(self, config: ParameterGolfModalConfig) -> tuple[list[str], dict[str, str]]:

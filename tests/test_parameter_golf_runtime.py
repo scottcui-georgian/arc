@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from arc.errors import ArcError
 from arc.tasks.parameter_golf.runtime import (
     DEFAULT_GPU_TYPE,
     DEFAULT_REMOTE_CPU,
@@ -131,7 +132,7 @@ class ParameterGolfRuntimeTests(unittest.TestCase):
         self.assertIsNone(config.train_entrypoint)
         self.assertEqual(config.extra_args, [])
         self.assertEqual(config.run_id, self.repo_root.name)
-        self.assertFalse(config.use_flash3)
+        self.assertTrue(config.use_flash3)
         self.assertEqual(
             config.forwarded_env["MAX_WALLCLOCK_SECONDS"],
             str(SUBMIT_MAX_WALLCLOCK_SECONDS),
@@ -143,6 +144,32 @@ class ParameterGolfRuntimeTests(unittest.TestCase):
         self.assertNotIn("ITERATIONS", config.forwarded_env)
         self.assertNotIn("RUN_ID", config.forwarded_env)
         self.assertFalse(config.submission_outputs)
+
+    def test_submit_config_respects_train_wallclock_override(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            config = self.runner._build_submit_train_config(train_wallclock=420)
+
+        self.assertEqual(config.forwarded_env["MAX_WALLCLOCK_SECONDS"], "420")
+
+    def test_submit_config_uses_default_wallclock_when_none(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            config = self.runner._build_submit_train_config(train_wallclock=None)
+
+        self.assertEqual(
+            config.forwarded_env["MAX_WALLCLOCK_SECONDS"],
+            str(SUBMIT_MAX_WALLCLOCK_SECONDS),
+        )
+
+    def test_submit_config_respects_grad_accum_override(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            config = self.runner._build_submit_train_config(grad_accum_steps=4)
+
+        self.assertEqual(config.forwarded_env["GRAD_ACCUM_STEPS"], "4")
+
+    def test_submit_config_rejects_invalid_grad_accum(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(ArcError):
+                self.runner._build_submit_train_config(grad_accum_steps=3)
 
 
 if __name__ == "__main__":

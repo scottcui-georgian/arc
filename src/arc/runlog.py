@@ -15,7 +15,10 @@ FAILURE_MARKERS = (
     "Traceback (most recent call last):",
     "RemoteError(",
     "ModuleNotFoundError:",
+    "Stopping app - user stopped from CLI.",
+    "modal app stop requested",
 )
+APP_ID_PATTERN = re.compile(r"\b(?P<app_id>ap-[A-Za-z0-9]+)\b")
 METRIC_PATTERN = re.compile(
     r"\b(?P<name>val_loss|val_bpb):(?P<value>-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)"
 )
@@ -72,3 +75,20 @@ def summarize_run_log(path: Path) -> RunLogSummary:
     if saw_failure:
         return RunLogSummary(state="failed", metrics=metrics)
     return RunLogSummary(state="running", metrics=metrics)
+
+
+def latest_modal_app_id(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    lines = _latest_submission_lines(lines)
+    for line in reversed(lines):
+        match = APP_ID_PATTERN.search(line)
+        if match:
+            return match.group("app_id")
+    return None

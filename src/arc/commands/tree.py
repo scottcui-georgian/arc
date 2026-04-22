@@ -40,9 +40,10 @@ def register(parser: argparse.ArgumentParser) -> None:
         help="Show only leaf nodes and their ancestors.",
     )
     parser.add_argument(
-        "--concise",
+        "--all",
         action="store_true",
-        help="Hide archived nodes unless they are explicitly requested.",
+        dest="show_all",
+        help="Include archived nodes in the tree (hidden by default).",
     )
 
 
@@ -52,7 +53,7 @@ def run(app: ArcApp, args: argparse.Namespace, extras: list[str]) -> int:
     app.store.require_initialized()
     archived_only = args.status == "archived"
     status_filter = None if archived_only else args.status
-    include_archived = archived_only or not args.concise
+    include_archived = archived_only or args.show_all
     records = app.store.list_node_records(include_archived=include_archived)
     print(
         render_tree(

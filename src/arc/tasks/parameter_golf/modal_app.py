@@ -20,7 +20,7 @@ from typing import Any, Literal
 import modal
 
 APP_NAME = "autoresearch-parameter-golf"
-DEFAULT_GPU_TYPE = "A100-40GB"
+DEFAULT_GPU_TYPE = "H100"
 DEFAULT_REMOTE_CPU = 8.0
 DEFAULT_REMOTE_MEMORY_GB = 8.0
 MODAL_CONFIG_ENV_VAR = "ARC_PARAMETER_GOLF_MODAL_CONFIG"
@@ -49,6 +49,7 @@ class ModalLaunchConfig:
     use_flash3: bool
     forwarded_env: dict[str, str]
     submission_outputs: bool
+    modal_timeout: int | None = None
 
 
 def _payload_positive_float(payload: dict[str, Any], name: str, default: float) -> float:
@@ -146,6 +147,16 @@ def _load_modal_config_from_env() -> ModalLaunchConfig:
     if mode == "submit" and action != "train":
         raise RuntimeError("Submit mode only supports the train action.")
 
+    timeout_raw = payload.get("modal_timeout")
+    if timeout_raw is None:
+        modal_timeout: int | None = None
+    elif isinstance(timeout_raw, bool) or not isinstance(timeout_raw, int):
+        raise RuntimeError("modal_timeout must be an integer number of seconds.")
+    else:
+        if timeout_raw <= 0:
+            raise RuntimeError("modal_timeout must be positive.")
+        modal_timeout = timeout_raw
+
     return ModalLaunchConfig(
         mode=mode,
         action=action,
@@ -160,6 +171,7 @@ def _load_modal_config_from_env() -> ModalLaunchConfig:
         use_flash3=_payload_bool(payload, "use_flash3"),
         forwarded_env=_payload_env_dict(payload, "forwarded_env"),
         submission_outputs=_payload_bool_default(payload, "submission_outputs", False),
+        modal_timeout=modal_timeout,
     )
 
 
@@ -170,7 +182,14 @@ REMOTE_MEMORY_GB = CONFIG.memory_gb
 REMOTE_MEMORY_MIB = int(round(REMOTE_MEMORY_GB * 1024))
 
 # gpu_remote Modal wall clock: `arc submit` stays bounded; `arc run train` allows longer interactive runs.
-GPU_REMOTE_TIMEOUT_SECONDS = 10800 if CONFIG.mode == "run" else 1800
+# `submit` defaults to 1800s (proxy-sized); the submit YAML can override via `modal_timeout`
+# for 8×H100 full runs that need more headroom for eval + TTT.
+if CONFIG.mode == "run":
+    GPU_REMOTE_TIMEOUT_SECONDS = 10800
+elif CONFIG.modal_timeout is not None:
+    GPU_REMOTE_TIMEOUT_SECONDS = CONFIG.modal_timeout
+else:
+    GPU_REMOTE_TIMEOUT_SECONDS = 1800
 
 
 def _requested_gpu_count(gpu_type: str) -> int:
@@ -204,7 +223,7 @@ def _find_first(paths: list[Path]) -> Path | None:
 def _install_common_training_deps(image: modal.Image) -> modal.Image:
     """Packages needed for train_gpt on any GPU (tokenizer + compressed data)."""
     return image.run_commands(
-        f"uv pip install --python {UV_PYTHON} sentencepiece zstandard",
+        f"uv pip install --python {UV_PYTHON} sentencepiece zstandard brotli",
         (
             f'{UV_PYTHON} -c "import sentencepiece, zstandard; print(\'common deps OK\')"'
         ),

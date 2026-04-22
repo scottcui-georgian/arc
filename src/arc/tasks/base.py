@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,6 +11,14 @@ from arc.text import format_float
 
 if TYPE_CHECKING:
     from arc.models import NodeRecord
+
+
+@dataclass(frozen=True)
+class SubmitOutcome:
+    """What a task's submit() returns: the SubmitResult + metrics to persist at submit time."""
+
+    result: SubmitResult
+    metrics: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -44,6 +52,22 @@ class TaskModule:
             return f" ({self.format_metric(metric_name, record.metrics[metric_name])})"
         return ""
 
-    def submit(self, node: Node, worktree_root: Path, log_path: Path) -> SubmitResult | None:
-        del node, worktree_root, log_path
+    def submit(
+        self,
+        node: Node,
+        worktree_root: Path,
+        log_path: Path,
+        *,
+        config_name: str | None = None,
+        train_wallclock: int | None = None,
+        grad_accum_steps: int | None = None,
+    ) -> SubmitOutcome | SubmitResult | None:
+        del (
+            node,
+            worktree_root,
+            log_path,
+            config_name,
+            train_wallclock,
+            grad_accum_steps,
+        )
         return None
